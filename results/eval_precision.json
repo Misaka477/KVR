@@ -1,0 +1,84 @@
+{
+  "hardware": {
+    "gpu_name": "NVIDIA GeForce RTX 3070 Ti Laptop GPU",
+    "vram_gb": 8.0,
+    "device": "cuda"
+  },
+  "model": {
+    "path": "D:/Software_Development/Project/models/Llama-3.2-1B",
+    "type": "llama",
+    "num_layers": 16,
+    "num_q_heads": 32,
+    "num_kv_heads": 8,
+    "d_head": 64,
+    "gqa_ratio": 4.0,
+    "size_category": "small"
+  },
+  "config": {
+    "n_steps_k": 4,
+    "n_steps_v": 5,
+    "tile_size": 16,
+    "beta": 0.1,
+    "noise_shaping": true,
+    "proj_rank": 8,
+    "proj_beta": 0.3,
+    "differential": true,
+    "diff_residual_gamma": 0.1545,
+    "v_orthogonal": true,
+    "quality_preference": "balanced"
+  },
+  "logit_precision": {
+    "evaluated_positions": 50,
+    "KL_divergence": {
+      "mean": 7.569894,
+      "std": 3.48649,
+      "min": -0.0,
+      "max": 15.796083
+    },
+    "Jensen_Shannon_divergence": {
+      "mean": 0.587674,
+      "std": 0.208584,
+      "min": 0.0,
+      "max": 0.690194
+    },
+    "Cosine_similarity": {
+      "mean": 0.167658,
+      "std": 0.559327,
+      "min": -0.50696,
+      "max": 0.999995
+    },
+    "Max_absolute_error": {
+      "mean": 18.539265,
+      "std": 6.789168,
+      "min": 0.0,
+      "max": 26.500977
+    }
+  },
+  "token_precision": {
+    "baseline_tokens": 50,
+    "ds_tokens": 50,
+    "exact_matches": 12,
+    "token_match_rate": 0.210526,
+    "first_divergence_position": 12
+  },
+  "text_precision": {
+    "char_match_pct": 27.24,
+    "diff_length": 261
+  },
+  "compression": {
+    "fp16_memory_mb": 1.78,
+    "ds_memory_mb": 0.76,
+    "compression_ratio": 2.3,
+    "memory_saved_pct": 57.2
+  },
+  "latency": {
+    "baseline_us_per_token": 29461.7,
+    "ds_us_per_token": 108834.8,
+    "ds_overhead_pct": 269.4
+  },
+  "raw_outputs": {
+    "baseline_text": "The future of artificial intelligence lies in the hands of the people, and the people are the ones who will decide what kind of AI they want to use. The future of AI is not just about the technology, but also about the people who use it. The future of AI is not",
+    "ds_text": "The future of artificial intelligence lies in the hands of the people\nThe future of artificial intelligence lies in the hands of the fed fed fed fed fed fed fed fed fed great great great great great great great great great great great great great great great great great great great great great great great great",
+    "diff_marker": "                                                                     ^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^ ^^  ^^^^^^^^^^^^^^^^ ^^^^^ ^ ^^^  ^^^^ ^^ ^^^^^^ ^^^^^^^^^ ^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+  }
+}
