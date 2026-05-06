@@ -1,5 +1,5 @@
 # DS-KVCache: Delta-Sigma Modulated 1-bit KV Cache with Noise Shaping
-## 超越 TurboQuant 的通用免训练 KV Cache 极限压缩方案
+## 一种通用免训练 KV Cache 极限压缩方案
 
 ---
 
