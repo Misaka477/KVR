@@ -423,7 +423,15 @@ def encode_matrix(
     order2_c1: float = 1.0,
     order2_c2: float = 0.5,
     zero_mean_integrator2: bool = False,
-    use_fwht: bool = False,
+    use_fwht: bool = False,  # DEPRECATED: use transform_mode="fwht"
+    transform_mode: str = "none",
+    transform_smooth_threshold: float = 0.05,
+    transform_outlier_threshold: float = 3.0,
+    adaptive_masking: bool = False,
+    mask_smooth_threshold: float = 0.05,
+    mask_outlier_threshold: float = 3.0,
+    mask_proj_beta_boost: float = 0.5,
+    mask_n_steps_boost: int = 1,
     initial_momentum: Optional[torch.Tensor] = None,
     initial_integrator2: Optional[torch.Tensor] = None,
     return_momentum: bool = False,
@@ -459,8 +467,30 @@ def encode_matrix(
         If True, subtract per-tile mean from integrator2 after each step
         to prevent DC drift in the feedback loop (§8.1.12).
     use_fwht:
-        If True, apply FWHT to each tile before encoding and inverse
-        FWHT during decoding — diffuses outliers into flat spectrum (§8.1.11).
+        DEPRECATED.  If True, equivalent to ``transform_mode="fwht"``.
+        Prefer ``transform_mode`` for the hybrid DCT/DWT engine (§8.2).
+    transform_mode:
+        Orthogonal transform applied to tiles before Σ-Δ encoding (§8.2).
+        One of ``"none"``, ``"dct"``, ``"dwt"``, ``"hybrid"``, ``"auto"``,
+        ``"fwht"``.  ``"auto"`` selects DCT/DWT/hybrid per tile based on
+        variance and max-abs statistics.
+    transform_smooth_threshold:
+        Variance threshold for ``"auto"`` mode: tiles below → DCT.
+    transform_outlier_threshold:
+        Max-abs threshold for ``"auto"`` mode: tiles above → DWT.
+    adaptive_masking:
+        If True, enable per-tile bit-rate scaling (§8.2.1):
+        outlier tiles get boosted ``proj_beta`` and/or extra ``n_steps``
+        to allocate more bits to attention "anchor" regions.
+    mask_smooth_threshold:
+        Variance threshold: tiles below this are "smooth".
+    mask_outlier_threshold:
+        Max-abs threshold: tiles above this are "outlier/sensitive".
+    mask_proj_beta_boost:
+        Fractional boost applied to ``proj_beta`` for sensitive tiles.
+        E.g. 0.5 means proj_beta * 1.5.
+    mask_n_steps_boost:
+        Extra pursuit iterations for sensitive tiles (≥0).
     initial_momentum:
         ``(..., M)`` initial first-order integrator.  Used for cross-head
         error sharing (§8.1.9).
@@ -478,6 +508,8 @@ def encode_matrix(
     orig_shape:
         ``(rows, cols)`` — needed to reconstruct the original matrix
         dimensions after unpadding.
+    transform_decisions:
+        ``list[str]`` — per-tile transform decision (for inverse).
     momentum: (only if return_momentum=True)
         ``(n_tiles, tile_size**2)`` final first-order integrator state.
     integrator2: (only if return_momentum=True)
@@ -485,6 +517,14 @@ def encode_matrix(
     """
     assert w.dim() == 2, "encode_matrix expects a 2-D weight matrix"
     rows, cols = w.shape
+
+    # Backward compat: use_fwht → transform_mode
+    if use_fwht and transform_mode == "none":
+        transform_mode = "fwht"
+
+    # Resolve transform mode enum
+    from rina.utils.transforms import TransformMode, apply_transform, compute_tile_diagnostics
+    _tm = TransformMode(transform_mode)
 
     # Pad to tile-aligned shape
     w_padded, (pad_r, pad_c) = _pad_to_tile_multiple(w, tile_size)
@@ -503,6 +543,9 @@ def encode_matrix(
     # (n_tiles, tile_size**2)
     tiles = patches.squeeze(0).transpose(0, 1).contiguous()
 
+    # ---- Tile diagnostics (for both transform & adaptive masking) ----
+    tile_vars, tile_maxabs = compute_tile_diagnostics(tiles)
+
     # Build validity mask: 1=real data, 0=padding (§10.3)
     # This prevents alpha underestimation for partially-filled tiles.
     validity = torch.ones_like(w_padded)  # (H_pad, W_pad)
@@ -520,12 +563,87 @@ def encode_matrix(
     # Determine if mask is non-trivial (i.e. there is padding)
     has_padding = (pad_r > 0) or (pad_c > 0)
 
-    # FWHT: rotate to Walsh-Hadamard basis — diffuses outliers
-    if use_fwht:
-        from rina.utils.walsh_hadamard import fwht as _fwht
-        tiles = _fwht(tiles)
+    # ---- Apply orthogonal transform (§8.2) ----
+    tiles, transform_decisions = apply_transform(
+        tiles,
+        mode=_tm,
+        tile_size=tile_size,
+        smooth_threshold=transform_smooth_threshold,
+        outlier_threshold=transform_outlier_threshold,
+    )
 
-    # Encode all tiles in parallel
+    # ---- Adaptive masking: per-tile bit-rate boost (§8.2.1) ----
+    if adaptive_masking:
+        # Encode tiles one-by-one so we can vary n_steps/proj_beta per tile
+        n_tiles = tiles.shape[0]
+        M = tile_size * tile_size
+        max_n_steps = n_steps + mask_n_steps_boost  # safe ceiling
+
+        bases_all = torch.ones(max_n_steps, n_tiles, M,
+                               device=tiles.device, dtype=tiles.dtype)
+        alphas_all = torch.zeros(max_n_steps, n_tiles,
+                                 device=tiles.device, dtype=tiles.dtype)
+        n_steps_used = torch.zeros(n_tiles, dtype=torch.int32, device=tiles.device)
+
+        if return_momentum:
+            momentum_out = torch.zeros(n_tiles, M, device=tiles.device, dtype=tiles.dtype)
+            integrator2_out = torch.zeros(n_tiles, M, device=tiles.device, dtype=tiles.dtype)
+
+        for i in range(n_tiles):
+            v = tile_vars[i].item()
+            m = tile_maxabs[i].item()
+
+            # Determine per-tile boost
+            is_sensitive = (v >= mask_smooth_threshold or m >= mask_outlier_threshold)
+            n_i = n_steps + (mask_n_steps_boost if is_sensitive else 0)
+            pb_i = proj_beta * (1.0 + mask_proj_beta_boost) if is_sensitive else proj_beta
+
+            n_steps_used[i] = n_i
+
+            tile_i = tiles[i:i+1].unsqueeze(0)       # (1, 1, M)
+            mask_i = mask_patches[i:i+1].unsqueeze(0) if has_padding else None
+
+            result = residual_pursuit_nd(
+                tile_i,
+                n_steps=n_i,
+                beta=beta,
+                return_bases=True,
+                proj_matrix=proj_matrix,
+                proj_beta=pb_i,
+                adaptive_eta=adaptive_eta,
+                eta_peak_step=eta_peak_step,
+                order2_gamma=order2_gamma,
+                order2_c1=order2_c1,
+                order2_c2=order2_c2,
+                zero_mean_integrator2=zero_mean_integrator2,
+                mask=mask_i,
+                initial_momentum=initial_momentum[i:i+1] if initial_momentum is not None else None,
+                initial_integrator2=initial_integrator2[i:i+1] if initial_integrator2 is not None else None,
+                return_momentum=return_momentum,
+            )
+
+            if return_momentum:
+                b_i, a_i, _, mom_i, int2_i = result
+                bases_all[:n_i, i, :] = b_i.squeeze(1).squeeze(1)
+                alphas_all[:n_i, i] = a_i.squeeze(1).squeeze(1)
+                momentum_out[i] = mom_i.squeeze(0).squeeze(0)
+                integrator2_out[i] = int2_i.squeeze(0).squeeze(0)
+            else:
+                b_i, a_i, _ = result
+                bases_all[:n_i, i, :] = b_i.squeeze(1).squeeze(1)
+                alphas_all[:n_i, i] = a_i.squeeze(1).squeeze(1)
+
+        # Trim to actual max steps used
+        max_used = int(n_steps_used.max().item())
+        bases_all = bases_all[:max_used]
+        alphas_all = alphas_all[:max_used]
+
+        if return_momentum:
+            return (bases_all, alphas_all, (rows, cols), transform_decisions,
+                    momentum_out, integrator2_out)
+        return bases_all, alphas_all, (rows, cols), transform_decisions
+
+    # ---- Standard parallel encoding (no adaptive masking) ----
     result = residual_pursuit_nd(
         tiles,
         n_steps=n_steps,
@@ -547,10 +665,10 @@ def encode_matrix(
 
     if return_momentum:
         bases, alphas, _, momentum, integrator2 = result
-        return bases, alphas, (rows, cols), momentum, integrator2
+        return bases, alphas, (rows, cols), transform_decisions, momentum, integrator2
     else:
         bases, alphas, _ = result
-        return bases, alphas, (rows, cols)
+        return bases, alphas, (rows, cols), transform_decisions
 
 
 def encode_matrix_sequential(
@@ -662,7 +780,9 @@ def decode_from_bases(
     tile_size: int = 16,
     *,
     recon_weights: Optional[torch.Tensor] = None,
-    use_fwht: bool = False,
+    use_fwht: bool = False,  # DEPRECATED: use transform_mode="fwht"
+    transform_mode: str = "none",
+    transform_decisions: Optional[List[str]] = None,
 ) -> torch.Tensor:
     """Reconstruct the full matrix from encoded 1-bit bases.
 
@@ -681,8 +801,17 @@ def decode_from_bases(
         reconstruction: Ŵ = Σ w_i · α_i · B_i instead of Σ α_i · B_i.
         If None, uniform w_i=1.0 (standard sum).
     use_fwht:
-        If True, apply inverse FWHT to each tile after reconstruction
-        to revert the Walsh-Hadamard transform applied during encoding (§8.1.11).
+        DEPRECATED.  If True, equivalent to ``transform_mode="fwht"``.
+        Prefer ``transform_mode`` for the hybrid DCT/DWT engine (§8.2).
+    transform_mode:
+        Orthogonal transform mode used during encoding.  Must match
+        the mode passed to ``encode_matrix`` (§8.2).
+        One of ``"none"``, ``"dct"``, ``"dwt"``, ``"hybrid"``, ``"auto"``,
+        ``"fwht"``.
+    transform_decisions:
+        Per-tile transform decision list (required when transform_mode
+        is ``"auto"``, ``"hybrid"``, or ``"dwt"``).  Each element is one
+        of ``"dct"``, ``"dwt"``, ``"hybrid"``, or ``"fwht"``.
 
     Returns
     -------
@@ -693,6 +822,10 @@ def decode_from_bases(
     assert M == tile_size**2
     assert alphas.shape == (N, n_tiles)
 
+    # Backward compat: use_fwht → transform_mode
+    if use_fwht and transform_mode == "none":
+        transform_mode = "fwht"
+
     # Reconstruct per tile
     if recon_weights is not None:
         assert recon_weights.shape == (N,), \
@@ -702,10 +835,25 @@ def decode_from_bases(
     else:
         w_tiles = torch.einsum("nt,ntm->tm", alphas.float(), bases.float())
 
-    # Inverse FWHT: rotate back from Walsh-Hadamard to circuit space
-    if use_fwht:
-        from rina.utils.walsh_hadamard import ifwht as _ifwht
-        w_tiles = _ifwht(w_tiles)
+    # ---- Apply inverse orthogonal transform (§8.2) ----
+    from rina.utils.transforms import TransformMode, apply_inverse_transform
+    _tm = TransformMode(transform_mode)
+
+    # Handle legacy FWHT mode through the new pipeline
+    if _tm == TransformMode.FWHT:
+        w_tiles, _ = apply_inverse_transform(
+            w_tiles,
+            mode=TransformMode.FWHT,
+            tile_size=tile_size,
+            transform_decisions=["fwht"] * n_tiles,
+        )
+    elif _tm != TransformMode.NONE:
+        w_tiles, _ = apply_inverse_transform(
+            w_tiles,
+            mode=_tm,
+            tile_size=tile_size,
+            transform_decisions=transform_decisions,
+        )
 
     # Invert F.unfold
     pad_r = (tile_size - orig_shape[0] % tile_size) % tile_size

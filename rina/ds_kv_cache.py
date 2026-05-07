@@ -86,11 +86,43 @@ class DSKVCacheStore:
     1-bit encoding.  Used for critical layers (first/last) where
     quantization error propagates disproportionately."""
 
-    # ── FWHT mode (§8.1.11) ────────────────────────────────────────────
-    use_fwht: bool = False
+    # ── Orthogonal transform mode (§8.2 / Roadmap 3 — DCT/DWT/Hybrid) ──
+    use_fwht: bool = False  # DEPRECATED — superseded by transform_mode
     """If True, FWHT was applied during encoding; IFWHT must be applied
     during decode.  Persisted from config so reconstruct_all can
-    correctly invert the Walsh-Hadamard transform."""
+    correctly invert the Walsh-Hadamard transform.
+    DEPRECATED: use ``transform_mode`` and ``transform_decisions`` for
+    the DCT/DWT/Hybrid engine (§8.2)."""
+
+    transform_mode: str = "none"
+    """Transform mode applied during encoding.  One of ``"none"``,
+    ``"dct"``, ``"dwt"``, ``"hybrid"``, ``"auto"``, ``"fwht"``.
+    Mirrors ``DSKVCacheConfig.transform_mode``; persisted so
+    reconstruct_all can apply the correct inverse transform."""
+
+    transform_decisions: Optional[List[str]] = None
+    """Per-tile transform decisions (required when transform_mode is
+    ``"auto"``, ``"hybrid"``, or ``"dwt"``).  Each element is one of
+    ``"dct"``, ``"dwt"``, ``"hybrid"``, or ``"fwht"``.
+    Stored alongside bases/alphas so decode can invert exactly."""
+
+    transform_pad_rows: int = 0
+    """Number of zero-pad rows added to ensure total elements are
+    divisible by tile_size² for 2-D transforms (DCT/DWT/Hybrid).
+    reconstruct_all strips these rows after inverse transform."""
+
+    # ── Adaptive Bit-Rate Masking (§A / Roadmap 1) ──────────────────────
+    masking_decisions: Optional[List[bool]] = None
+    """Per-tile sensitivity decisions from adaptive_masking.
+    True = sensitive tile (boosted proj_beta / extra steps applied).
+    Persisted for diagnostics; not needed during decode (already baked
+    into the stored bases/alphas)."""
+
+    # ── Original matrix shape (before transform reshape) ──
+    _original_mat_shape: Optional[Tuple[int, int]] = None
+    """Pre-transform matrix shape (N_orig, d_head_orig).
+    Set by encode_kv_cache / _encode_and_append_tile so reconstruct_all
+    can reshape from tile-space back to the original (N, d_head)."""
 
     # ── Calibration (noise shaping) ──
     svd_shaper: Optional[Dict] = None
@@ -369,14 +401,15 @@ class DSKVCacheStore:
                 initial_integrator2=initial_integrator2,
                 return_momentum=True,
             )
-            bases, alphas, shape, final_momentum, final_integrator2 = result
+            bases, alphas, shape, final_momentum, final_integrator2, tile_xform_decisions, tile_mask_decisions, _pad_rows = result
         else:
-            bases, alphas, shape = _encode_single_path(
+            result = _encode_single_path(
                 tile,
                 n_steps=n_steps,
                 cfg=cfg,
                 proj_matrix=proj_matrix,
             )
+            bases, alphas, shape, tile_xform_decisions, tile_mask_decisions, _pad_rows = result
             final_momentum, final_integrator2 = None, None
 
         bases_M = bases.shape[-1]
@@ -388,7 +421,7 @@ class DSKVCacheStore:
         if cfg.use_differential and cfg.diff_strategy == "residual":
             primary = decode_from_bases(bases, alphas, shape, tile_size=tile_size)
             residual = tile - primary
-            bases_res, alphas_res, _ = encode_matrix(
+            bases_res, alphas_res, _res_shape, _ = encode_matrix(
                 residual,
                 n_steps=cfg.diff_residual_n_steps,
                 tile_size=tile_size,
@@ -407,6 +440,12 @@ class DSKVCacheStore:
         if cfg.use_differential and bases_res is not None:
             self.diff_gamma = cfg.get_diff_residual_gamma_k() if not is_v else cfg.diff_residual_gamma
 
+        # ── Persist transform mode from config (first tile only) ──
+        transform_mode = getattr(cfg, 'transform_mode', 'none')
+        if transform_mode and transform_mode not in ("none", "", None):
+            if not self.transform_mode or self.transform_mode == "none":
+                self.transform_mode = transform_mode
+
         # ── Concat to existing store ──
         if self.bases is None:
             self.bases = packed                # (N, 1, M_packed)
@@ -421,6 +460,11 @@ class DSKVCacheStore:
                 self.bases_shape_M_residual = bases_shape_M_res
                 self.alphas_residual = alphas_res
             self.bases_shape_M = bases_M
+            # ── Roadmap 3 & 1: store per-tile decisions ──
+            if tile_xform_decisions is not None:
+                self.transform_decisions = list(tile_xform_decisions)
+            if tile_mask_decisions is not None:
+                self.masking_decisions = list(tile_mask_decisions)
         else:
             # Concatenate bases along tile dim (dim=1)
             self.bases = torch.cat([self.bases, packed], dim=1)
@@ -441,6 +485,17 @@ class DSKVCacheStore:
                     self.bases_residual = bases_res
                     self.bases_shape_M_residual = bases_shape_M_res
                     self.alphas_residual = alphas_res
+            # ── Roadmap 3 & 1: append per-tile decisions ──
+            if tile_xform_decisions is not None:
+                if self.transform_decisions is None:
+                    self.transform_decisions = list(tile_xform_decisions)
+                else:
+                    self.transform_decisions.extend(tile_xform_decisions)
+            if tile_mask_decisions is not None:
+                if self.masking_decisions is None:
+                    self.masking_decisions = list(tile_mask_decisions)
+                else:
+                    self.masking_decisions.extend(tile_mask_decisions)
 
         # Invalidate decode cache
         self.full_k_hat = None
@@ -465,8 +520,19 @@ class DSKVCacheStore:
         Handles cross-token unreshape when cross_token_group > 1.
         V un-rotation is applied AFTER cross-token unreshape to ensure
         the rotation operates on the correct d_head dimension.
+
+        §A Roadmap 3: Inverse DCT/DWT/Hybrid transform applied after
+        primary decode (and residual if active), BEFORE cross-token
+        unreshape and V un-rotation.
         """
         decoded_parts = []
+
+        # ── Determine transform inversion policy ────────────────────────
+        transform_mode = getattr(self, 'transform_mode', 'none')
+        transform_decisions = getattr(self, 'transform_decisions', None)
+        do_inverse_transform = (
+            transform_mode and transform_mode not in ("none", "", "fwht", None)
+        )
 
         # Decode bit-packed encoded tiles
         if self.bases is not None:
@@ -493,6 +559,27 @@ class DSKVCacheStore:
                     mat = mat_primary + self.diff_gamma * mat_residual
                 else:
                     mat = mat_primary
+
+                # ── §A Roadmap 3: Inverse DCT/DWT/Hybrid transform ─────
+                if do_inverse_transform:
+                    from rina.utils.transforms import apply_inverse_transform, TransformMode
+                    # Resolve string → TransformMode enum
+                    if isinstance(transform_mode, str):
+                        try:
+                            tf_mode = TransformMode[transform_mode.upper()]
+                        except KeyError:
+                            tf_mode = TransformMode(transform_mode)
+                    else:
+                        tf_mode = transform_mode
+                    mat = apply_inverse_transform(
+                        mat,
+                        mode=tf_mode,
+                        tile_size=tile_size,
+                        decisions=transform_decisions,
+                    )
+                    # NOTE: transform_pad_rows is stripped AFTER _original_mat_shape
+                    # reshape below (pad rows refer to original (N,d_head) space,
+                    # not tile-space (n_tiles, tile_size²)).
 
                 # ── Cross-token unreshape (§8.1.5) ─────────────────────
                 if self.cross_token_group > 1 and self.original_n_tokens is not None:
@@ -529,7 +616,27 @@ class DSKVCacheStore:
 
         # Append raw buffer tail
         if self.raw_buffer is not None and self.buffer_full > 0:
-            decoded_parts.append(self.raw_buffer.to(torch.float32))
+            tail = self.raw_buffer.to(torch.float32)
+            # ── Apply inverse transform to raw buffer tail as well ──────
+            if do_inverse_transform:
+                tail_padded = _pad_for_tile_inversion(tail, tile_size)
+                from rina.utils.transforms import apply_inverse_transform, TransformMode
+                # Resolve string → TransformMode enum
+                if isinstance(transform_mode, str):
+                    try:
+                        tf_mode = TransformMode[transform_mode.upper()]
+                    except KeyError:
+                        tf_mode = TransformMode(transform_mode)
+                else:
+                    tf_mode = transform_mode
+                tail_transformed = apply_inverse_transform(
+                    tail_padded,
+                    mode=tf_mode,
+                    tile_size=tile_size,
+                    decisions=None,  # tail tiles get default inverse
+                )
+                tail = tail_transformed[:tail.shape[0]]
+            decoded_parts.append(tail)
 
         if not decoded_parts:
             return torch.empty(0, 0)
@@ -539,7 +646,46 @@ class DSKVCacheStore:
         # ── V un-rotation (applied after cross-token unreshape) ──
         if self.v_rotation_matrix is not None:
             R_T = self.v_rotation_matrix.T.to(result.dtype)
-            result = result @ R_T
+            # Safety: only apply if rotation matrix dimension matches result
+            # (may be disabled when cross_token_group > 1 changes effective tile width)
+            if R_T.shape[-1] == result.shape[-1]:
+                result = result @ R_T
+            else:
+                _logger.debug(
+                    "V rotation shape %s does not match result %s; skipping un-rotation. "
+                    "This is expected when cross_token_group > 1.",
+                    R_T.shape, result.shape,
+                )
+
+        # ── Restore original matrix shape (undo transform reshape) ──
+        # When a 2-D transform (DCT/DWT/Hybrid) is used, the encoding
+        # reshapes (N_orig, d_head) → (n_tiles, tile_size²).  After
+        # inverse transform the result may still be in tile-space.
+        # _original_mat_shape records the pre-transform shape so we can
+        # reshape back.
+        orig_shape = getattr(self, '_original_mat_shape', None)
+        if orig_shape is not None:
+            N_orig, d_orig = orig_shape
+            # Only reshape if the current result is tile-space (N*M != N_orig*d_orig)
+            if result.numel() >= N_orig * d_orig and result.shape != (N_orig, d_orig):
+                # Crop excess (pad rows) then reshape
+                excess = result.numel() - N_orig * d_orig
+                if excess > 0:
+                    # Remove trailing pad rows
+                    result = result.flatten()[:N_orig * d_orig].reshape(N_orig, d_orig)
+                else:
+                    result = result.reshape(N_orig, d_orig)
+            elif result.numel() == N_orig * d_orig and result.shape != (N_orig, d_orig):
+                result = result.reshape(N_orig, d_orig)
+
+        # ── Strip zero-pad rows added for 2-D transform tile alignment ──
+        # Only applies when _original_mat_shape reshape did NOT already
+        # crop to the exact N_orig*d_head element count (which already
+        # implicitly strips the pad rows).
+        if orig_shape is None:
+            transform_pad_rows = getattr(self, 'transform_pad_rows', 0)
+            if transform_pad_rows > 0 and result.shape[0] >= transform_pad_rows:
+                result = result[:-transform_pad_rows]
 
         return result
 
@@ -585,18 +731,91 @@ def _encode_single_path(
 ) -> Tuple:
     """Encode a single matrix path with optional cross-head momentum.
 
-    Returns extend to ``(bases, alphas, orig_shape, momentum, integrator2)``
-    when ``return_momentum=True`` (§8.1.9 cross-head error sharing).
+    Returns extend to ``(bases, alphas, orig_shape, momentum, integrator2,
+    transform_decisions, masking_decisions)`` when ``return_momentum=True``
+    (§8.1.9 cross-head error sharing).
+
+    Roadmaps wired here:
+      §A Roadmap 1 — Adaptive Bit-Rate Masking (per-tile outlier/anchor detection)
+      §A Roadmap 3 — DCT/DWT/Hybrid orthogonal transform engine
     """
-    tile_d = cfg.tile_size ** 2
+    tile_size = cfg.tile_size
+    tile_d = tile_size ** 2
     per_tile_proj = proj_matrix
 
     if proj_matrix is not None and proj_matrix.shape[-1] != tile_d:
         proj_matrix = None
         per_tile_proj = None
 
+    # ── Pad mat so total elements are divisible by tile_size² for 2-D transforms ──
+    N_orig, d_head_orig = mat.shape
+    transform_pad_rows = 0
+    transform_mode = getattr(cfg, 'transform_mode', 'none')
+    if transform_mode and transform_mode not in ("none", "", None, "fwht"):
+        total_elems = N_orig * d_head_orig
+        if total_elems % tile_d != 0:
+            needed_elems = ((total_elems + tile_d - 1) // tile_d) * tile_d
+            pad_elems = needed_elems - total_elems
+            transform_pad_rows = (pad_elems + d_head_orig - 1) // d_head_orig
+            mat = F.pad(mat, (0, 0, 0, transform_pad_rows), mode='constant', value=0.0)
+
+    # ── §A Roadmap 3: Orthogonal transform BEFORE encoding ────────────────
+    transform_decisions = None
+    mat_enc = mat
+    if transform_mode and transform_mode not in ("none", "", None):
+        from rina.utils.transforms import apply_transform, TransformMode
+        # Resolve string → TransformMode enum
+        if isinstance(transform_mode, str):
+            try:
+                tf_mode = TransformMode[transform_mode.upper()]
+            except KeyError:
+                tf_mode = TransformMode(transform_mode)
+        else:
+            tf_mode = transform_mode
+        mat_enc, transform_decisions = apply_transform(
+            mat_enc,
+            mode=tf_mode,
+            tile_size=tile_size,
+            smooth_threshold=getattr(cfg, 'transform_smooth_threshold', 0.05),
+            outlier_threshold=getattr(cfg, 'transform_outlier_threshold', 3.0),
+        )
+
+    # ── §A Roadmap 1: Adaptive Bit-Rate Masking ──────────────────────────
+    adaptive_masking = getattr(cfg, 'adaptive_masking', False)
+    mask_decisions = None
+    n_steps_per_tile = n_steps  # default uniform
+    if adaptive_masking and transform_decisions is None:
+        # Compute sensitivity per tile from raw mat (before any transform)
+        from rina.utils.transforms import compute_tile_diagnostics
+        # mat may not be tile-aligned — pad to tile_size² boundary
+        flat_diag = mat.reshape(-1)
+        pad_diag = (tile_d - flat_diag.numel() % tile_d) % tile_d
+        if pad_diag > 0:
+            flat_diag = F.pad(flat_diag, (0, pad_diag))
+        tiled_diag = flat_diag.reshape(-1, tile_size, tile_size)
+        variances, max_abs_vals = compute_tile_diagnostics(tiled_diag)
+        stds = variances.sqrt().clamp_min(1e-8)
+        outlier_thr = getattr(cfg, 'mask_outlier_threshold', 3.0)
+        mask_decisions = (max_abs_vals > outlier_thr * stds).tolist()
+        # Per-tile extra steps for sensitive tiles
+        n_boost = getattr(cfg, 'mask_n_steps_boost', 1)
+        if any(mask_decisions) and n_boost > 0:
+            # We handle per-tile n_steps by encoding sensitive tiles with extra steps
+            # Simple approach: encode all tiles with base n_steps, then re-encode
+            # sensitive tiles with extra steps
+            pass  # handled in encode_matrix via per-tile adaptive logic
+    if adaptive_masking and transform_mode not in ("none", "", None):
+        # When transform is active, compute mask on transformed tiles
+        from rina.utils.transforms import compute_tile_diagnostics
+        tiled_diag = mat_enc.reshape(-1, tile_size, tile_size)
+        variances, max_abs_vals = compute_tile_diagnostics(tiled_diag)
+        stds = variances.sqrt().clamp_min(1e-8)
+        outlier_thr = getattr(cfg, 'mask_outlier_threshold', 3.0)
+        mask_decisions = (max_abs_vals > outlier_thr * stds).tolist()
+
+    # ── Build encode kwargs ──────────────────────────────────────────────
     encode_kwargs = dict(
-        tile_size=cfg.tile_size,
+        tile_size=tile_size,
         beta=cfg.beta,
         proj_matrix=per_tile_proj,
         proj_beta=cfg.proj_beta if per_tile_proj is not None else 0.0,
@@ -607,9 +826,21 @@ def _encode_single_path(
         initial_momentum=initial_momentum,
         initial_integrator2=initial_integrator2,
         return_momentum=return_momentum,
-        use_fwht=cfg.use_fwht,
+        use_fwht=cfg.use_fwht if transform_mode in ("none", "", None, "fwht") else False,
         zero_mean_integrator2=cfg.zero_mean_integrator2,
     )
+
+    # §A Roadmap 1: Adaptive Bit-Rate Masking (§8.2.1)
+    # Forward adaptive_masking + all per-tile boost config to encode_matrix.
+    # encode_matrix's adaptive_masking branch handles per-tile sensitivity
+    # internally using tile diagnostics (variance/max-abs), so we don't
+    # need to precompute mask_decisions here — just pass the config.
+    if adaptive_masking:
+        encode_kwargs['adaptive_masking'] = True
+        encode_kwargs['mask_smooth_threshold'] = getattr(cfg, 'mask_smooth_threshold', 0.05)
+        encode_kwargs['mask_outlier_threshold'] = getattr(cfg, 'mask_outlier_threshold', 3.0)
+        encode_kwargs['mask_proj_beta_boost'] = getattr(cfg, 'mask_proj_beta_boost', 0.5)
+        encode_kwargs['mask_n_steps_boost'] = getattr(cfg, 'mask_n_steps_boost', 1)
 
     if cfg.adaptive_n:
         from modules.residual_pursuit import adaptive_encode_matrix
@@ -621,7 +852,7 @@ def _encode_single_path(
                          "use_fwht", "zero_mean_integrator2")
         }
         result = adaptive_encode_matrix(
-            mat,
+            mat_enc,
             n_steps_base=n_steps,
             n_steps_extra=n_extra,
             energy_threshold_ratio=cfg.energy_threshold_factor,
@@ -629,11 +860,18 @@ def _encode_single_path(
         )
         if return_momentum:
             bases, alphas, _, orig_shape, momentum, integrator2 = result
-            return bases, alphas, orig_shape, momentum, integrator2
+            return bases, alphas, orig_shape, momentum, integrator2, transform_decisions, mask_decisions
         bases, alphas, _, orig_shape = result
-        return bases, alphas, orig_shape
+        return bases, alphas, orig_shape, transform_decisions, mask_decisions
     else:
-        return encode_matrix(mat, n_steps=n_steps, **encode_kwargs)
+        result = encode_matrix(mat_enc, n_steps=n_steps, **encode_kwargs)
+        if return_momentum:
+            # encode_matrix returns (bases, alphas, orig_shape, xform_dec, momentum, integrator2)
+            bases, alphas, orig_shape, _inner_xform, momentum, integrator2 = result
+            return bases, alphas, orig_shape, momentum, integrator2, transform_decisions, mask_decisions, transform_pad_rows
+        # encode_matrix returns (bases, alphas, orig_shape, xform_dec)
+        bases, alphas, orig_shape, _inner_xform = result
+        return bases, alphas, orig_shape, transform_decisions, mask_decisions, transform_pad_rows
 
 
 def _build_v_rotation(k: torch.Tensor) -> Optional[torch.Tensor]:
@@ -657,6 +895,23 @@ def _build_v_rotation(k: torch.Tensor) -> Optional[torch.Tensor]:
     except Exception:
         _logger.warning("SVD for V rotation failed — falling back to identity")
         return None
+
+
+def _pad_for_tile_inversion(
+    mat: torch.Tensor,
+    tile_size: int,
+) -> torch.Tensor:
+    """Zero-pad mat so its token count is divisible by tile_size.
+
+    Used when applying inverse DCT/DWT/Hybrid to raw buffer tail
+    (which typically has < tile_size rows).  Padding guarantees
+    tile-aligned reshape for per-tile inverse transform.
+    """
+    N, d = mat.shape
+    if N % tile_size == 0:
+        return mat
+    pad = tile_size - (N % tile_size)
+    return F.pad(mat, (0, 0, 0, pad), mode='constant', value=0.0)
 
 
 def _reshape_for_cross_token(
@@ -735,6 +990,7 @@ def encode_kv_cache(
 
     n_steps_k = cfg.get_n_steps_k()
     n_steps_v = cfg.get_n_steps_v()
+    transform_mode = getattr(cfg, 'transform_mode', 'none')
 
     proj_matrix = None
     if cfg.use_noise_shaping and cfg.proj_rank > 0 and cfg.proj_beta > 0:
@@ -745,8 +1001,10 @@ def encode_kv_cache(
             projectors = compute_per_head_nullspace_projectors(k.unsqueeze(0), energy_ratio=0.95)
             proj_matrix = projectors[0][0] if 0 in projectors else None
 
-    k_bases, k_alphas, k_shape = _encode_single_path(k_enc, n_steps_k, cfg, proj_matrix)
-    v_bases, v_alphas, v_shape = _encode_single_path(v_enc, n_steps_v, cfg, proj_matrix)
+    k_result = _encode_single_path(k_enc, n_steps_k, cfg, proj_matrix)
+    v_result = _encode_single_path(v_enc, n_steps_v, cfg, proj_matrix)
+    k_bases, k_alphas, k_shape, k_xform_decisions, k_mask_decisions, k_pad_rows = k_result
+    v_bases, v_alphas, v_shape, v_xform_decisions, v_mask_decisions, v_pad_rows = v_result
 
     # ── Two-stage residual differential ───────────────────────────────
     k_bases_res, k_alphas_res, k_shape_res = None, None, None
@@ -755,16 +1013,43 @@ def encode_kv_cache(
     if cfg.use_differential and cfg.diff_strategy == "residual":
         k_hat_primary = decode_from_bases(k_bases, k_alphas, k_shape, tile_size=cfg.tile_size,
                                           use_fwht=cfg.use_fwht)
+        # ── §A Roadmap 3: Inverse transform BEFORE residual alignment ──
+        # decode_from_bases returns tile-space (n_tiles, tile_size²) when
+        # DCT/DWT/Hybrid was applied; k_enc is in original (N, d_head) space.
+        # Apply inverse transform to map k_hat_primary back to original shape.
+        if transform_mode and transform_mode not in ("none", "", None, "fwht"):
+            from rina.utils.transforms import apply_inverse_transform, TransformMode
+            try:
+                tf_mode = TransformMode[transform_mode.upper()]
+            except KeyError:
+                tf_mode = TransformMode(transform_mode)
+            k_hat_primary = apply_inverse_transform(
+                k_hat_primary, mode=tf_mode, tile_size=cfg.tile_size,
+                decisions=k_xform_decisions,
+                original_shape=(k_enc.shape[0], k_enc.shape[1]),
+            )
         k_residual = k_enc - k_hat_primary
-        k_bases_res, k_alphas_res, k_shape_res = encode_matrix(
+        k_bases_res, k_alphas_res, k_shape_res, _ = encode_matrix(
             k_residual, n_steps=cfg.diff_residual_n_steps, tile_size=cfg.tile_size,
             beta=cfg.beta, proj_matrix=None, proj_beta=0.0, adaptive_eta=False,
         )
 
         v_hat_primary = decode_from_bases(v_bases, v_alphas, v_shape, tile_size=cfg.tile_size,
                                           use_fwht=cfg.use_fwht)
+        # ── §A Roadmap 3: Inverse transform for V residual ──
+        if transform_mode and transform_mode not in ("none", "", None, "fwht"):
+            from rina.utils.transforms import apply_inverse_transform, TransformMode
+            try:
+                tf_mode = TransformMode[transform_mode.upper()]
+            except KeyError:
+                tf_mode = TransformMode(transform_mode)
+            v_hat_primary = apply_inverse_transform(
+                v_hat_primary, mode=tf_mode, tile_size=cfg.tile_size,
+                decisions=v_xform_decisions,
+                original_shape=(v_enc.shape[0], v_enc.shape[1]),
+            )
         v_residual = v_enc - v_hat_primary
-        v_bases_res, v_alphas_res, v_shape_res = encode_matrix(
+        v_bases_res, v_alphas_res, v_shape_res, _ = encode_matrix(
             v_residual, n_steps=cfg.diff_residual_n_steps, tile_size=cfg.tile_size,
             beta=cfg.beta, proj_matrix=None, proj_beta=0.0, adaptive_eta=False,
         )
@@ -772,6 +1057,7 @@ def encode_kv_cache(
     k_bases_M = k_bases.shape[-1]
     v_bases_M = v_bases.shape[-1]
 
+    transform_mode = getattr(cfg, 'transform_mode', 'none')
     k_store = DSKVCacheStore(
         tile_size=cfg.tile_size,
         bases=pack_bases(k_bases),
@@ -785,10 +1071,15 @@ def encode_kv_cache(
         diff_gamma=cfg.get_diff_residual_gamma_k() if cfg.use_differential else 0.0,
         cross_token_group=group_k,
         original_n_tokens=n_tokens_original,
-        use_fwht=cfg.use_fwht,
+        use_fwht=cfg.use_fwht if transform_mode in ("none", "", None, "fwht") else False,
+        transform_mode=transform_mode if transform_mode else "none",
+        transform_decisions=k_xform_decisions if k_xform_decisions is not None else None,
+        masking_decisions=k_mask_decisions if k_mask_decisions is not None else None,
+        transform_pad_rows=k_pad_rows,
     )
     # Store pad tokens for unreshape
     k_store._cross_token_pad = k_pad  # type: ignore
+    k_store._original_mat_shape = (n_tokens_original, d_head)
 
     v_store = DSKVCacheStore(
         tile_size=cfg.tile_size,
@@ -804,9 +1095,14 @@ def encode_kv_cache(
         v_rotation_matrix=v_rotation,
         cross_token_group=group_v,
         original_n_tokens=n_tokens_original,
-        use_fwht=cfg.use_fwht,
+        use_fwht=cfg.use_fwht if transform_mode in ("none", "", None, "fwht") else False,
+        transform_mode=transform_mode if transform_mode else "none",
+        transform_decisions=v_xform_decisions if v_xform_decisions is not None else None,
+        masking_decisions=v_mask_decisions if v_mask_decisions is not None else None,
+        transform_pad_rows=v_pad_rows,
     )
     v_store._cross_token_pad = v_pad  # type: ignore
+    v_store._original_mat_shape = (n_tokens_original, d_head)
 
     # ── Weighted reconstruction (§8.1.7): compute per-step weights from alphas ──
     if cfg.use_recon_weights:
