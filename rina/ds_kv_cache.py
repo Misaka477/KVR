@@ -26,9 +26,8 @@ from modules.residual_pursuit import (
     ResidualAlphas,
     encode_matrix,
     decode_from_bases,
-    pack_bases,
-    unpack_bases,
 )
+from rina.utils.bit_packing import pack_bases, unpack_bases
 
 _logger = logging.getLogger(__name__)
 
@@ -124,6 +123,13 @@ class DSKVCacheStore:
     Set by encode_kv_cache / _encode_and_append_tile so reconstruct_all
     can reshape from tile-space back to the original (N, d_head)."""
 
+    # ── Encoding segments for multi-segment reconstruct (§8.1.13) ─
+    _encode_segments: List[Tuple[int, int, int, int, int, int]] = field(default_factory=list)
+    """List of (start_tile, end_tile, unpadded_rows, real_tokens, cross_token_pad,
+    transform_pad_rows) tuples.  Each segment can be decoded independently,
+    then concatenated token-by-token to avoid tile-alignment padding contamination
+    across bulk and incremental encoding passes."""
+
     # ── Calibration (noise shaping) ──
     svd_shaper: Optional[Dict] = None
 
@@ -135,6 +141,36 @@ class DSKVCacheStore:
     memory_bytes: int = 0
     fp16_memory_bytes: int = 0
     compression_ratio: float = 0.0
+
+    # ── Cross-token unreshape helper (§8.1.13) ─────────────────────────
+    def _unreshape_to_tokens(
+        self,
+        mat: torch.Tensor,
+        n_real_tokens: int,
+        seg_pad: int = 0,
+    ) -> torch.Tensor:
+        """Cross-token unreshape + padding trim for a single segment.
+
+        Parameters
+        ----------
+        mat:
+            Decoded matrix in grouped format ``(N_tiles*G, G*d_head)``.
+        n_real_tokens:
+            Number of real (non-pad) tokens in this segment.
+        seg_pad:
+            Cross-token pad tokens added during ``_reshape_for_cross_token``.
+
+        Returns
+        -------
+        Token sequence ``(n_keep, d_head)``.
+        """
+        Gd = mat.shape[1]
+        d_head = Gd // self.cross_token_group
+        flat = mat.reshape(-1, d_head)
+        if seg_pad > 0:
+            flat = flat[:-seg_pad]
+        n_keep = min(n_real_tokens, flat.shape[0])
+        return flat[:n_keep]
 
     # ── Weighted reconstruction (§8.1.7) ────────────────────────────────
     def compute_recon_weights(self, temperature: float = 0.5):
@@ -157,10 +193,10 @@ class DSKVCacheStore:
         """
         if self.alphas is None:
             return
-        alpha_mean = self.alphas.float().abs().mean(dim=-1)  # (N_steps,)
-        if alpha_mean.numel() <= 1:
+        alpha_med = self.alphas.float().abs().median(dim=-1).values  # (N_steps,)
+        if alpha_med.numel() <= 1:
             return
-        weights = torch.softmax(alpha_mean / temperature, dim=0)
+        weights = torch.softmax(alpha_med / temperature, dim=0)
         # Normalise so max weight = 1.0 (avoids inflating overall scale)
         weights = weights / weights.max()
         self.recon_weights = weights.to(self.alphas.dtype)
@@ -292,6 +328,7 @@ class DSKVCacheStore:
                 ret_momentum, ret_integrator2 = self._encode_and_append_tile(
                     group_reshaped, cfg=cfg, svd_shaper=svd_shaper, is_v=is_v,
                     initial_momentum=momentum, initial_integrator2=integrator2,
+                    n_real_tokens=group_trigger,
                 )
                 momentum, integrator2 = ret_momentum, ret_integrator2
                 self.raw_buffer = self.raw_buffer[group_trigger:]
@@ -334,6 +371,7 @@ class DSKVCacheStore:
                 ret_momentum, ret_integrator2 = self._encode_and_append_tile(
                     tile, cfg=cfg, svd_shaper=svd_shaper, is_v=is_v,
                     initial_momentum=momentum, initial_integrator2=integrator2,
+                    n_real_tokens=effective_tile_size,
                 )
                 momentum, integrator2 = ret_momentum, ret_integrator2
 
@@ -359,6 +397,7 @@ class DSKVCacheStore:
         is_v: bool = False,
         initial_momentum: Optional[torch.Tensor] = None,
         initial_integrator2: Optional[torch.Tensor] = None,
+        n_real_tokens: Optional[int] = None,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Encode a single (tile_size, d_head) tile and concatenate to store.
 
@@ -368,6 +407,8 @@ class DSKVCacheStore:
             Tile is assumed already in V-rotated space; no further rotation applied.
         initial_momentum: Cross-head Σ-Δ momentum from previous head (§8.1.9).
         initial_integrator2: Cross-head second-order integrator from previous head.
+        n_real_tokens: Actual number of real tokens encoded in this tile.
+            None defaults to tile_size * cross_token_group.
 
         Returns
         -------
@@ -375,6 +416,9 @@ class DSKVCacheStore:
         """
         tile_size, d_head = tile.shape
         n_steps = cfg.get_n_steps_v() if is_v else cfg.get_n_steps_k()
+
+        if n_real_tokens is None:
+            n_real_tokens = tile_size * self.cross_token_group
 
         # ── Noise-shaping projector ──
         proj_matrix = None
@@ -386,12 +430,14 @@ class DSKVCacheStore:
         # ── Cross-head error sharing: request momentum return ──
         do_cross_head = (
             cfg.cross_head_error_share
-            and initial_momentum is not None
             and cfg.order2_gamma > 0
         )
 
         # ── Primary encode (use same path as bulk: _encode_single_path) ──
-        if do_cross_head and initial_momentum.shape[-1] == tile_size ** 2:
+        if do_cross_head:
+            if initial_momentum is None:
+                initial_momentum = torch.zeros(1, tile_size * tile_size, device=tile.device, dtype=tile.dtype)
+                initial_integrator2 = torch.zeros(1, tile_size * tile_size, device=tile.device, dtype=tile.dtype) if cfg.order2_gamma > 0 else None
             result = _encode_single_path(
                 tile,
                 n_steps=n_steps,
@@ -412,6 +458,59 @@ class DSKVCacheStore:
             bases, alphas, shape, tile_xform_decisions, tile_mask_decisions, _pad_rows = result
             final_momentum, final_integrator2 = None, None
 
+        # ── Align n_steps with existing store (adaptive_masking fix) ──
+        # encode_matrix with adaptive_masking=True trims bases to max_used
+        # across all tiles in the batch.  For a single incremental tile,
+        # max_used may be lower than the bulk-encoded store, causing a
+        # dimension-0 mismatch on concatenation.  Pad the new tile (or
+        # existing store) with neutral values to align.
+        if self.bases is not None:
+            store_n = self.bases.shape[0]       # packed: dim 0 = n_steps
+            new_n = bases.shape[0]              # float: dim 0 = n_steps
+            if new_n < store_n:
+                # Pad new tile with neutral values: bases=1.0, alphas=0.0
+                pad_n = store_n - new_n
+                pad_bases = torch.ones(pad_n, *bases.shape[1:],
+                                       device=bases.device, dtype=bases.dtype)
+                pad_alphas = torch.zeros(pad_n, *alphas.shape[1:],
+                                         device=alphas.device, dtype=alphas.dtype)
+                bases = torch.cat([bases, pad_bases], dim=0)
+                alphas = torch.cat([alphas, pad_alphas], dim=0)
+            elif new_n > store_n:
+                # Rare: existing store has fewer steps.  Pad the store
+                # (already packed + fp16) to match.
+                pad_n = new_n - store_n
+                # Packed all-ones bases = -1 in int32
+                all_ones_packed_val = -1
+                pad_packed = torch.full(
+                    (pad_n, *self.bases.shape[1:]),
+                    all_ones_packed_val,
+                    device=self.bases.device, dtype=self.bases.dtype,
+                )
+                self.bases = torch.cat([self.bases, pad_packed], dim=0)
+                pad_alphas = torch.zeros(
+                    pad_n, *self.alphas.shape[1:],
+                    device=self.alphas.device, dtype=self.alphas.dtype,
+                )
+                self.alphas = torch.cat([self.alphas, pad_alphas], dim=0)
+                # Also pad residual store if present
+                if self.bases_residual is not None:
+                    pad_res = torch.full(
+                        (pad_n, *self.bases_residual.shape[1:]),
+                        all_ones_packed_val,
+                        device=self.bases_residual.device,
+                        dtype=self.bases_residual.dtype,
+                    )
+                    self.bases_residual = torch.cat([self.bases_residual, pad_res], dim=0)
+                    pad_alpha_res = torch.zeros(
+                        pad_n, *self.alphas_residual.shape[1:],
+                        device=self.alphas_residual.device,
+                        dtype=self.alphas_residual.dtype,
+                    )
+                    self.alphas_residual = torch.cat(
+                        [self.alphas_residual, pad_alpha_res], dim=0,
+                    )
+
         bases_M = bases.shape[-1]
         packed = pack_bases(bases)
 
@@ -420,7 +519,30 @@ class DSKVCacheStore:
         bases_shape_M_res = None
         if cfg.use_differential and cfg.diff_strategy == "residual":
             primary = decode_from_bases(bases, alphas, shape, tile_size=tile_size)
-            residual = tile - primary
+            # Compute residual in transform domain to match primary tile layout.
+            transform_mode = getattr(cfg, 'transform_mode', 'none')
+            if transform_mode and transform_mode not in ("none", "", None, "fwht"):
+                from rina.utils.transforms import apply_transform, TransformMode
+                try:
+                    tf_mode = TransformMode[transform_mode.upper()]
+                except KeyError:
+                    tf_mode = TransformMode(transform_mode)
+                tile_d = tile_size ** 2
+                N_t, d_t = tile.shape
+                total_elems = N_t * d_t
+                if total_elems % tile_d != 0:
+                    needed_elems = ((total_elems + tile_d - 1) // tile_d) * tile_d
+                    pad_elems = needed_elems - total_elems
+                    pad_rows = (pad_elems + d_t - 1) // d_t
+                    tile_padded = F.pad(tile, (0, 0, 0, pad_rows), mode='constant', value=0.0)
+                else:
+                    tile_padded = tile
+                tile_transformed, _ = apply_transform(
+                    tile_padded, mode=tf_mode, tile_size=tile_size,
+                )
+                residual = tile_transformed - primary
+            else:
+                residual = tile - primary
             bases_res, alphas_res, _res_shape, _ = encode_matrix(
                 residual,
                 n_steps=cfg.diff_residual_n_steps,
@@ -436,6 +558,46 @@ class DSKVCacheStore:
 
         alphas = alphas.to(torch.float16)
 
+        # ── Align residual n_steps with existing residual store ──
+        # Same adaptive_masking dimension-drift issue as primary bases.
+        if bases_res is not None and self.bases_residual is not None:
+            store_n = self.bases_residual.shape[0]
+            new_n = bases_res.shape[0]
+            if new_n < store_n:
+                pad_n = store_n - new_n
+                all_ones = -1  # packed all-ones value
+                pad_bases_res = torch.full(
+                    (pad_n, *bases_res.shape[1:]),
+                    all_ones,
+                    device=bases_res.device, dtype=bases_res.dtype,
+                )
+                bases_res = torch.cat([bases_res, pad_bases_res], dim=0)
+                pad_alpha_res = torch.zeros(
+                    pad_n, *alphas_res.shape[1:],
+                    device=alphas_res.device, dtype=alphas_res.dtype,
+                )
+                alphas_res = torch.cat([alphas_res, pad_alpha_res], dim=0)
+            elif new_n > store_n:
+                pad_n = new_n - store_n
+                all_ones = -1
+                pad_store_res = torch.full(
+                    (pad_n, *self.bases_residual.shape[1:]),
+                    all_ones,
+                    device=self.bases_residual.device,
+                    dtype=self.bases_residual.dtype,
+                )
+                self.bases_residual = torch.cat(
+                    [self.bases_residual, pad_store_res], dim=0,
+                )
+                pad_alpha_store = torch.zeros(
+                    pad_n, *self.alphas_residual.shape[1:],
+                    device=self.alphas_residual.device,
+                    dtype=self.alphas_residual.dtype,
+                )
+                self.alphas_residual = torch.cat(
+                    [self.alphas_residual, pad_alpha_store], dim=0,
+                )
+
         # ── Set diff_gamma for incremental path (was missing → residual never applied) ──
         if cfg.use_differential and bases_res is not None:
             self.diff_gamma = cfg.get_diff_residual_gamma_k() if not is_v else cfg.diff_residual_gamma
@@ -447,10 +609,11 @@ class DSKVCacheStore:
                 self.transform_mode = transform_mode
 
         # ── Concat to existing store ──
+        old_n_tiles = 0 if self.bases is None else self.bases.shape[1]
         if self.bases is None:
             self.bases = packed                # (N, 1, M_packed)
             self.alphas = alphas               # (N, 1)
-            self.orig_shape = (tile_size, d_head)
+            self.orig_shape = shape
             # Track original (pre-reshape) token count for cross-token unreshape
             if self.cross_token_group > 1:
                 # (tile_size, G*d_head) encodes tile_size * G real tokens
@@ -469,8 +632,12 @@ class DSKVCacheStore:
             # Concatenate bases along tile dim (dim=1)
             self.bases = torch.cat([self.bases, packed], dim=1)
             self.alphas = torch.cat([self.alphas, alphas], dim=1)
+            # orig_shape tracks pre-padding matrix dimensions.
+            # Increment by the padded row count to keep total tiles consistent:
+            # ceil(orig_shape[0]/tile_size)*tile_size + pad_rows_for_new_tile
             encoded_tokens = self.orig_shape[0]
-            self.orig_shape = (encoded_tokens + tile_size, d_head)
+            padded_new = ((shape[0] + tile_size - 1) // tile_size) * tile_size
+            self.orig_shape = (encoded_tokens + padded_new, shape[1])
             # Accumulate original (pre-reshape) token count
             if self.cross_token_group > 1:
                 if self.original_n_tokens is None:
@@ -496,6 +663,17 @@ class DSKVCacheStore:
                     self.masking_decisions = list(tile_mask_decisions)
                 else:
                     self.masking_decisions.extend(tile_mask_decisions)
+
+        # ── Append segment metadata for multi-segment reconstruct (§8.1.13) ──
+        n_new_tiles = packed.shape[1]
+        self._encode_segments.append((
+            old_n_tiles,
+            old_n_tiles + n_new_tiles,
+            shape[0],
+            n_real_tokens,
+            0,
+            _pad_rows,
+        ))
 
         # Invalidate decode cache
         self.full_k_hat = None
@@ -524,15 +702,118 @@ class DSKVCacheStore:
         §A Roadmap 3: Inverse DCT/DWT/Hybrid transform applied after
         primary decode (and residual if active), BEFORE cross-token
         unreshape and V un-rotation.
-        """
-        decoded_parts = []
 
+        §8.1.13 Multi-segment decode: When ``_encode_segments`` has >1 entry,
+        each segment is decoded independently to avoid tile-alignment padding
+        contamination across bulk and incremental encoding passes.
+        """
         # ── Determine transform inversion policy ────────────────────────
         transform_mode = getattr(self, 'transform_mode', 'none')
         transform_decisions = getattr(self, 'transform_decisions', None)
         do_inverse_transform = (
             transform_mode and transform_mode not in ("none", "", "fwht", None)
         )
+
+        segments = getattr(self, '_encode_segments', None)
+
+        # ── Multi-segment decode path (§8.1.13) ─────────────────────────
+        if segments is not None and len(segments) > 1 and self.bases is not None:
+            # Invalidate cache — multi-segment decode always rebuilds
+            self.full_k_hat = None
+            bases = unpack_bases(self.bases)
+            if self.bases_shape_M is not None and bases.shape[-1] > self.bases_shape_M:
+                bases = bases[..., :self.bases_shape_M]
+
+            bases_res = None
+            if use_differential and self.bases_residual is not None and self.diff_gamma > 0:
+                bases_res = unpack_bases(self.bases_residual)
+                if self.bases_shape_M_residual is not None and bases_res.shape[-1] > self.bases_shape_M_residual:
+                    bases_res = bases_res[..., :self.bases_shape_M_residual]
+
+            # Resolve transform mode enum once
+            tf_mode = None
+            if do_inverse_transform:
+                from rina.utils.transforms import apply_inverse_transform, TransformMode
+                if isinstance(transform_mode, str):
+                    try:
+                        tf_mode = TransformMode[transform_mode.upper()]
+                    except KeyError:
+                        tf_mode = TransformMode(transform_mode)
+                else:
+                    tf_mode = transform_mode
+
+            token_parts = []
+            for start, end, seg_unpadded_rows, n_real_tokens, seg_pad, seg_transform_pad in segments:
+                seg_bases = bases[:, start:end]
+                seg_alphas = self.alphas[:, start:end] if self.alphas is not None else None
+                seg_orig_shape = (seg_unpadded_rows, self.orig_shape[1])
+
+                # ── Primary decode ──
+                mat_seg = decode_from_bases(
+                    seg_bases, seg_alphas, seg_orig_shape, tile_size=tile_size,
+                    recon_weights=self.recon_weights,
+                    use_fwht=self.use_fwht,
+                )
+
+                # ── Differential residual ──
+                if bases_res is not None:
+                    seg_bases_res = bases_res[:, start:end]
+                    seg_alphas_res = self.alphas_residual[:, start:end] if self.alphas_residual is not None else None
+                    mat_res_seg = decode_from_bases(
+                        seg_bases_res, seg_alphas_res, seg_orig_shape, tile_size=tile_size,
+                        use_fwht=self.use_fwht,
+                    )
+                    mat_seg = mat_seg + self.diff_gamma * mat_res_seg
+
+                # ── Inverse DCT/DWT/Hybrid transform ──
+                if do_inverse_transform and tf_mode is not None:
+                    if self.cross_token_group > 1:
+                        spatial_rows = seg_unpadded_rows * self.cross_token_group
+                        spatial_cols = self.orig_shape[1] // self.cross_token_group
+                    else:
+                        spatial_rows, spatial_cols = seg_orig_shape
+                    seg_xform_decisions = transform_decisions[start:end] if transform_decisions is not None else None
+                    mat_seg = apply_inverse_transform(
+                        mat_seg,
+                        mode=tf_mode,
+                        tile_size=tile_size,
+                        decisions=seg_xform_decisions,
+                        original_shape=(spatial_rows, spatial_cols),
+                    )
+                    if seg_transform_pad > 0 and mat_seg.shape[0] >= seg_transform_pad:
+                        mat_seg = mat_seg[:-seg_transform_pad]
+
+                # ── Cross-token unreshape → token sequence ──
+                if self.cross_token_group > 1:
+                    token_seq = self._unreshape_to_tokens(mat_seg, n_real_tokens, seg_pad)
+                else:
+                    token_seq = mat_seg[:n_real_tokens]
+
+                token_parts.append(token_seq)
+
+            result = torch.cat(token_parts, dim=0)
+
+            # ── Append raw buffer tail ──
+            if self.raw_buffer is not None and self.buffer_full > 0:
+                tail = self.raw_buffer.to(torch.float32)
+                result = torch.cat([result, tail], dim=0)
+
+            # ── V un-rotation (on final concatenated result) ──
+            if self.v_rotation_matrix is not None:
+                R_T = self.v_rotation_matrix.T.to(result.dtype)
+                if R_T.shape[-1] == result.shape[-1]:
+                    result = result @ R_T
+                else:
+                    _logger.debug(
+                        "V rotation shape %s does not match result %s; skipping un-rotation. "
+                        "This is expected when cross_token_group > 1.",
+                        R_T.shape, result.shape,
+                    )
+
+            return result
+
+        # ── Single-segment / legacy path ────────────────────────────────
+        decoded_parts = []
 
         # Decode bit-packed encoded tiles
         if self.bases is not None:
@@ -571,27 +852,48 @@ class DSKVCacheStore:
                             tf_mode = TransformMode(transform_mode)
                     else:
                         tf_mode = transform_mode
+                    # Compute spatial-domain shape (pre-transform) for proper
+                    # inverse reshape.  orig_shape is in transform domain
+                    # (e.g., (2, 256) for cross-token-grouped DCT).
+                    # Convert to spatial padded shape: (N*G, d_head).
+                    if self.cross_token_group > 1:
+                        spatial_rows = self.orig_shape[0] * self.cross_token_group
+                        spatial_cols = self.orig_shape[1] // self.cross_token_group
+                    else:
+                        spatial_rows, spatial_cols = self.orig_shape
+                    transform_pad_rows = getattr(self, 'transform_pad_rows', 0)
                     mat = apply_inverse_transform(
                         mat,
                         mode=tf_mode,
                         tile_size=tile_size,
                         decisions=transform_decisions,
+                        original_shape=(spatial_rows, spatial_cols),
                     )
-                    # NOTE: transform_pad_rows is stripped AFTER _original_mat_shape
-                    # reshape below (pad rows refer to original (N,d_head) space,
-                    # not tile-space (n_tiles, tile_size²)).
+                    # Strip transform padding rows (added before forward
+                    # transform for tile_size² alignment)
+                    if transform_pad_rows > 0 and mat.shape[0] >= transform_pad_rows:
+                        mat = mat[:-transform_pad_rows]
 
                 # ── Cross-token unreshape (§8.1.5) ─────────────────────
                 if self.cross_token_group > 1 and self.original_n_tokens is not None:
-                    d_head = self.orig_shape[1] // self.cross_token_group
-                    pad_tokens = getattr(self, '_cross_token_pad', 0)
-                    # orig_shape = (N//G padded, G*d_head) after encode
-                    # Unflatten: (N_padded, G*d) → (N_padded*G, d) → [:original_n]
-                    N_encoded, Gd = mat.shape
-                    flat = mat.reshape(N_encoded * self.cross_token_group, d_head)
-                    if pad_tokens > 0:
-                        flat = flat[:-pad_tokens]
-                    mat = flat[:self.original_n_tokens]
+                    Gd = mat.shape[1]
+                    # Determine if mat is already per-token (d_head cols)
+                    # or still in grouped format (G*d_head cols).
+                    real_d_head = None
+                    orig_mat_shape = getattr(self, '_original_mat_shape', None)
+                    if orig_mat_shape is not None:
+                        real_d_head = orig_mat_shape[1]
+                    if real_d_head is not None and Gd == real_d_head:
+                        # Already per-token — trim pad tokens only
+                        mat = mat[:self.original_n_tokens]
+                    else:
+                        d_head = Gd // self.cross_token_group
+                        pad_tokens = getattr(self, '_cross_token_pad', 0)
+                        N_encoded = mat.shape[0]
+                        flat = mat.reshape(N_encoded * self.cross_token_group, d_head)
+                        if pad_tokens > 0:
+                            flat = flat[:-pad_tokens]
+                        mat = flat[:self.original_n_tokens]
 
                 # ── Strip dynamic tile pad rows (§8.1.10) ─────────────
                 if self.tile_pad_counts is not None:
@@ -615,27 +917,10 @@ class DSKVCacheStore:
             decoded_parts.append(mat)
 
         # Append raw buffer tail
+        # Tail is in spatial domain (never forward-transformed during
+        # incremental accumulation) — skip inverse transform.
         if self.raw_buffer is not None and self.buffer_full > 0:
             tail = self.raw_buffer.to(torch.float32)
-            # ── Apply inverse transform to raw buffer tail as well ──────
-            if do_inverse_transform:
-                tail_padded = _pad_for_tile_inversion(tail, tile_size)
-                from rina.utils.transforms import apply_inverse_transform, TransformMode
-                # Resolve string → TransformMode enum
-                if isinstance(transform_mode, str):
-                    try:
-                        tf_mode = TransformMode[transform_mode.upper()]
-                    except KeyError:
-                        tf_mode = TransformMode(transform_mode)
-                else:
-                    tf_mode = transform_mode
-                tail_transformed = apply_inverse_transform(
-                    tail_padded,
-                    mode=tf_mode,
-                    tile_size=tile_size,
-                    decisions=None,  # tail tiles get default inverse
-                )
-                tail = tail_transformed[:tail.shape[0]]
             decoded_parts.append(tail)
 
         if not decoded_parts:
@@ -663,16 +948,30 @@ class DSKVCacheStore:
         # inverse transform the result may still be in tile-space.
         # _original_mat_shape records the pre-transform shape so we can
         # reshape back.
+        #
+        # CRITICAL: Only reshape when result is NOT already in token-space
+        # (last dim != d_orig).  When cross-token unreshape or raw buffer
+        # tail has already converted the result to (N, d_head), the reshape
+        # must be a no-op to avoid silently discarding tail tokens.
         orig_shape = getattr(self, '_original_mat_shape', None)
         if orig_shape is not None:
             N_orig, d_orig = orig_shape
-            # Only reshape if the current result is tile-space (N*M != N_orig*d_orig)
-            if result.numel() >= N_orig * d_orig and result.shape != (N_orig, d_orig):
-                # Crop excess (pad rows) then reshape
+            if result.shape[-1] != d_orig and result.numel() >= N_orig * d_orig:
+                # Result is in grouped/tile format — reshape the encoding
+                # prefix only; additional elements (raw buffer tail) are
+                # already in token-space and must be preserved.
                 excess = result.numel() - N_orig * d_orig
                 if excess > 0:
-                    # Remove trailing pad rows
-                    result = result.flatten()[:N_orig * d_orig].reshape(N_orig, d_orig)
+                    # Separate encoding prefix from tail, reshape prefix
+                    prefix_flat = result.flatten()[:N_orig * d_orig]
+                    prefix = prefix_flat.reshape(N_orig, d_orig)
+                    suffix_flat = result.flatten()[N_orig * d_orig:]
+                    if suffix_flat.numel() > 0:
+                        result = torch.cat([
+                            prefix.flatten(), suffix_flat,
+                        ]).reshape(-1, d_orig)
+                    else:
+                        result = prefix
                 else:
                     result = result.reshape(N_orig, d_orig)
             elif result.numel() == N_orig * d_orig and result.shape != (N_orig, d_orig):
@@ -828,6 +1127,7 @@ def _encode_single_path(
         return_momentum=return_momentum,
         use_fwht=cfg.use_fwht if transform_mode in ("none", "", None, "fwht") else False,
         zero_mean_integrator2=cfg.zero_mean_integrator2,
+        use_mask_gating=getattr(cfg, 'use_mask_gating', True),
     )
 
     # §A Roadmap 1: Adaptive Bit-Rate Masking (§8.2.1)
@@ -849,7 +1149,7 @@ def _encode_single_path(
         adaptive_kwargs = {
             k: v for k, v in encode_kwargs.items()
             if k not in ("initial_momentum", "initial_integrator2", "return_momentum",
-                         "use_fwht", "zero_mean_integrator2")
+                         "use_fwht", "zero_mean_integrator2", "use_mask_gating")
         }
         result = adaptive_encode_matrix(
             mat_enc,
@@ -860,9 +1160,9 @@ def _encode_single_path(
         )
         if return_momentum:
             bases, alphas, _, orig_shape, momentum, integrator2 = result
-            return bases, alphas, orig_shape, momentum, integrator2, transform_decisions, mask_decisions
+            return bases, alphas, orig_shape, momentum, integrator2, transform_decisions, mask_decisions, transform_pad_rows
         bases, alphas, _, orig_shape = result
-        return bases, alphas, orig_shape, transform_decisions, mask_decisions
+        return bases, alphas, orig_shape, transform_decisions, mask_decisions, transform_pad_rows
     else:
         result = encode_matrix(mat_enc, n_steps=n_steps, **encode_kwargs)
         if return_momentum:
@@ -1011,24 +1311,35 @@ def encode_kv_cache(
     v_bases_res, v_alphas_res, v_shape_res = None, None, None
 
     if cfg.use_differential and cfg.diff_strategy == "residual":
+        # Compute residual in TRANSFORM domain to match primary tile layout.
+        # The primary bases were encoded from a transform-domain matrix
+        # (mat_enc after apply_transform in _encode_single_path), so the
+        # residual must be computed in the same domain to produce matching
+        # tile counts during reconstruction.
         k_hat_primary = decode_from_bases(k_bases, k_alphas, k_shape, tile_size=cfg.tile_size,
                                           use_fwht=cfg.use_fwht)
-        # ── §A Roadmap 3: Inverse transform BEFORE residual alignment ──
-        # decode_from_bases returns tile-space (n_tiles, tile_size²) when
-        # DCT/DWT/Hybrid was applied; k_enc is in original (N, d_head) space.
-        # Apply inverse transform to map k_hat_primary back to original shape.
         if transform_mode and transform_mode not in ("none", "", None, "fwht"):
-            from rina.utils.transforms import apply_inverse_transform, TransformMode
+            from rina.utils.transforms import apply_transform, apply_inverse_transform, TransformMode
             try:
                 tf_mode = TransformMode[transform_mode.upper()]
             except KeyError:
                 tf_mode = TransformMode(transform_mode)
-            k_hat_primary = apply_inverse_transform(
-                k_hat_primary, mode=tf_mode, tile_size=cfg.tile_size,
-                decisions=k_xform_decisions,
-                original_shape=(k_enc.shape[0], k_enc.shape[1]),
+            tile_d = cfg.tile_size ** 2
+            N_k, d_k = k_enc.shape
+            total_elems = N_k * d_k
+            if total_elems % tile_d != 0:
+                needed_elems = ((total_elems + tile_d - 1) // tile_d) * tile_d
+                pad_elems = needed_elems - total_elems
+                pad_rows = (pad_elems + d_k - 1) // d_k
+                k_enc_padded = F.pad(k_enc, (0, 0, 0, pad_rows), mode='constant', value=0.0)
+            else:
+                k_enc_padded = k_enc
+            k_enc_transformed, _ = apply_transform(
+                k_enc_padded, mode=tf_mode, tile_size=cfg.tile_size,
             )
-        k_residual = k_enc - k_hat_primary
+            k_residual = k_enc_transformed - k_hat_primary
+        else:
+            k_residual = k_enc - k_hat_primary
         k_bases_res, k_alphas_res, k_shape_res, _ = encode_matrix(
             k_residual, n_steps=cfg.diff_residual_n_steps, tile_size=cfg.tile_size,
             beta=cfg.beta, proj_matrix=None, proj_beta=0.0, adaptive_eta=False,
@@ -1036,19 +1347,28 @@ def encode_kv_cache(
 
         v_hat_primary = decode_from_bases(v_bases, v_alphas, v_shape, tile_size=cfg.tile_size,
                                           use_fwht=cfg.use_fwht)
-        # ── §A Roadmap 3: Inverse transform for V residual ──
         if transform_mode and transform_mode not in ("none", "", None, "fwht"):
-            from rina.utils.transforms import apply_inverse_transform, TransformMode
+            from rina.utils.transforms import apply_transform, TransformMode
             try:
                 tf_mode = TransformMode[transform_mode.upper()]
             except KeyError:
                 tf_mode = TransformMode(transform_mode)
-            v_hat_primary = apply_inverse_transform(
-                v_hat_primary, mode=tf_mode, tile_size=cfg.tile_size,
-                decisions=v_xform_decisions,
-                original_shape=(v_enc.shape[0], v_enc.shape[1]),
+            tile_d = cfg.tile_size ** 2
+            N_v, d_v = v_enc.shape
+            total_elems = N_v * d_v
+            if total_elems % tile_d != 0:
+                needed_elems = ((total_elems + tile_d - 1) // tile_d) * tile_d
+                pad_elems = needed_elems - total_elems
+                pad_rows = (pad_elems + d_v - 1) // d_v
+                v_enc_padded = F.pad(v_enc, (0, 0, 0, pad_rows), mode='constant', value=0.0)
+            else:
+                v_enc_padded = v_enc
+            v_enc_transformed, _ = apply_transform(
+                v_enc_padded, mode=tf_mode, tile_size=cfg.tile_size,
             )
-        v_residual = v_enc - v_hat_primary
+            v_residual = v_enc_transformed - v_hat_primary
+        else:
+            v_residual = v_enc - v_hat_primary
         v_bases_res, v_alphas_res, v_shape_res, _ = encode_matrix(
             v_residual, n_steps=cfg.diff_residual_n_steps, tile_size=cfg.tile_size,
             beta=cfg.beta, proj_matrix=None, proj_beta=0.0, adaptive_eta=False,
@@ -1076,6 +1396,14 @@ def encode_kv_cache(
         transform_decisions=k_xform_decisions if k_xform_decisions is not None else None,
         masking_decisions=k_mask_decisions if k_mask_decisions is not None else None,
         transform_pad_rows=k_pad_rows,
+        _encode_segments=[(
+            0,
+            k_bases.shape[1],
+            k_shape[0],
+            n_tokens_original,
+            k_pad,
+            k_pad_rows,
+        )],
     )
     # Store pad tokens for unreshape
     k_store._cross_token_pad = k_pad  # type: ignore
@@ -1100,6 +1428,14 @@ def encode_kv_cache(
         transform_decisions=v_xform_decisions if v_xform_decisions is not None else None,
         masking_decisions=v_mask_decisions if v_mask_decisions is not None else None,
         transform_pad_rows=v_pad_rows,
+        _encode_segments=[(
+            0,
+            v_bases.shape[1],
+            v_shape[0],
+            n_tokens_original,
+            v_pad,
+            v_pad_rows,
+        )],
     )
     v_store._cross_token_pad = v_pad  # type: ignore
     v_store._original_mat_shape = (n_tokens_original, d_head)
@@ -1167,3 +1503,175 @@ def _log_diagnostics(
         f"CosSim={cos_sim:.6f}, "
         f"CompressRatio={comp_ratio:.1f}x ({original_bytes}→{store.memory_bytes} bytes)"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Incremental store helpers (moved from incremental_decode.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _resolve_dtype(dtype_str: str) -> torch.dtype:
+    _map = {
+        "fp16": torch.float16, "float16": torch.float16,
+        "fp32": torch.float32, "float32": torch.float32,
+        "bf16": torch.bfloat16, "bfloat16": torch.bfloat16,
+    }
+    key = dtype_str.lower().strip()
+    if key in _map:
+        return _map[key]
+    try:
+        return getattr(torch, dtype_str)
+    except AttributeError:
+        return torch.float16
+
+
+def init_incremental_store(
+    d_head: int,
+    cfg: DSKVCacheConfig,
+) -> DSKVCacheStore:
+    """Create an empty DSKVCacheStore with pre-allocated raw buffer."""
+    dtype = _resolve_dtype(cfg.base_dtype)
+    buffer = torch.zeros(cfg.incremental_buffer_size, d_head, dtype=dtype)
+    return DSKVCacheStore(
+        tile_size=cfg.tile_size,
+        raw_buffer=buffer,
+        buffer_full=0,
+    )
+
+
+def incremental_encode_step(
+    new_token_vec: torch.Tensor,
+    store: DSKVCacheStore,
+    cfg: DSKVCacheConfig,
+    is_key: bool = True,
+) -> DSKVCacheStore:
+    """Append one new token vector to the store, encoding batch if full."""
+    if store.raw_buffer is None:
+        dtype = _resolve_dtype(cfg.base_dtype)
+        store.raw_buffer = torch.zeros(
+            cfg.incremental_buffer_size, new_token_vec.shape[0], dtype=dtype,
+        )
+    idx = store.buffer_full
+    store.raw_buffer[idx, :] = new_token_vec.to(store.raw_buffer.dtype)
+    store.buffer_full += 1
+    if store.buffer_full >= cfg.incremental_buffer_size:
+        return _flush_incremental_buffer(store, cfg, is_key)
+    return store
+
+
+def incremental_encode_batch(
+    new_token_matrix: torch.Tensor,
+    store: DSKVCacheStore,
+    cfg: DSKVCacheConfig,
+    is_key: bool = True,
+) -> DSKVCacheStore:
+    """Append a batch of new token vectors, handling partial buffer fill."""
+    n_new = new_token_matrix.shape[0]
+    pos = 0
+    while pos < n_new:
+        free = store.raw_buffer.shape[0] - store.buffer_full
+        chunk = min(free, n_new - pos)
+        store.raw_buffer[store.buffer_full : store.buffer_full + chunk, :] = \
+            new_token_matrix[pos : pos + chunk].to(store.raw_buffer.dtype)
+        store.buffer_full += chunk
+        pos += chunk
+        if store.buffer_full >= cfg.incremental_buffer_size:
+            store = _flush_incremental_buffer(store, cfg, is_key)
+    return store
+
+
+def finalize_store(
+    store: DSKVCacheStore,
+    cfg: DSKVCacheConfig,
+    is_key: bool = True,
+) -> DSKVCacheStore:
+    """Flush any remaining tokens in the raw buffer and cache reconstruction."""
+    if store.buffer_full > 0:
+        store = _flush_incremental_buffer(store, cfg, is_key)
+    store.full_k_hat = store.reconstruct_all(cfg.tile_size, cfg.use_differential)
+    store.update_stats()
+    return store
+
+
+def _flush_incremental_buffer(
+    store: DSKVCacheStore,
+    cfg: DSKVCacheConfig,
+    is_key: bool,
+) -> DSKVCacheStore:
+    """Encode raw buffer tokens and merge into the existing store.
+
+    Uses the UnifiedEncoder for consistent transform-aware encoding.
+    """
+    if store.buffer_full == 0:
+        return store
+
+    from rina.unified_encoder import UnifiedEncoder
+    from rina.encoded_data import EncodedData
+    from rina.metadata import Metadata
+
+    new_mat = store.raw_buffer[:store.buffer_full, :].float()
+    N_new, d_head = new_mat.shape
+    transform_mode = getattr(cfg, 'transform_mode', 'none')
+
+    # ── Determine existing transform state ───────────────────────────────
+    old_has_transform = (
+        getattr(store, 'transform_mode', 'none') not in ("none", "", None)
+    )
+    old_xform_decisions = getattr(store, 'transform_decisions', None)
+
+    # ── Build existing EncodedData from store fields ─────────────────────
+    existing = None
+    if store.bases is not None:
+        existing = EncodedData(
+            bases=store.bases,
+            bases_shape_M=store.bases_shape_M,
+            alphas=store.alphas,
+            orig_shape=store.orig_shape,
+            bases_residual=store.bases_residual,
+            bases_shape_M_residual=store.bases_shape_M_residual,
+            alphas_residual=store.alphas_residual,
+        )
+
+    encoder = UnifiedEncoder(cfg, tile_size=store.tile_size)
+    n_steps = cfg.get_n_steps_k() if is_key else cfg.get_n_steps_v()
+
+    # ── Encode via temporary buffer ──────────────────────────────────────
+    from rina.encode_buffer import EncodeBuffer
+    temp_buf = EncodeBuffer(data=store.raw_buffer[:store.buffer_full].clone(), buffer_full=store.buffer_full)
+
+    merged_encoded, xform_info = encoder.encode_buffer_and_merge(
+        temp_buf, existing,
+        n_steps=n_steps, is_key=is_key,
+        svd_shaper=store.svd_shaper,
+        existing_has_transform=old_has_transform,
+        existing_xform_decisions=old_xform_decisions,
+    )
+
+    # ── Write back to store ──────────────────────────────────────────────
+    store.bases = merged_encoded.bases
+    store.bases_shape_M = merged_encoded.bases_shape_M
+    store.alphas = merged_encoded.alphas
+    store.orig_shape = merged_encoded.orig_shape
+    store.bases_residual = merged_encoded.bases_residual
+    store.bases_shape_M_residual = merged_encoded.bases_shape_M_residual
+    store.alphas_residual = merged_encoded.alphas_residual
+
+    if xform_info.get("transform_decisions") is not None:
+        store.transform_decisions = xform_info["transform_decisions"]
+        store.transform_mode = transform_mode
+        store.use_fwht = False
+    else:
+        store.transform_decisions = None
+        store.transform_mode = "none"
+        store.use_fwht = (transform_mode == "fwht")
+
+    # Differential residual becomes stale after re-encode
+    if cfg.use_differential:
+        store.bases_residual = None
+        store.alphas_residual = None
+
+    store.raw_buffer.zero_()
+    store.buffer_full = 0
+    store.full_k_hat = None
+    store.update_stats()
+    return store

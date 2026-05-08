@@ -57,16 +57,6 @@ _logger = logging.getLogger("eval_precision")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Utility: auto-config imports (from scripts/auto_config.py)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _import_auto_config():
-    """Lazy-import the auto_config detection functions."""
-    from scripts.auto_config import detect_gpu_info, detect_model_info, generate_optimal_config
-    return detect_gpu_info, detect_model_info, generate_optimal_config
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Level 1: Logit precision metrics
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -303,19 +293,21 @@ def run_evaluation(
 
     Returns a dict with all metrics and metadata.
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+    from rina.model_adapter import HardwareProfile, ModelProfile, ModelAdapter
 
     # ── 0. Auto-detect optimal config ──
-    detect_gpu_info, detect_model_info, generate_optimal_config = _import_auto_config()
-    gpu_info = detect_gpu_info()
-    model_info = detect_model_info(model_path)
-    cfg = generate_optimal_config(gpu_info, model_info, quality_preference=quality)
+    hw = HardwareProfile.detect()
+    hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    profile = ModelProfile.from_hf_config(hf_config)
+    adapter = ModelAdapter(profile, hw)
+    cfg = adapter.recommend_config(quality=quality)
     if cfg_override:
         for k, v in cfg_override.items():
             if hasattr(cfg, k):
                 setattr(cfg, k, v)
 
-    device_str = device_override or gpu_info.get("recommended_device", "cuda")
+    device_str = device_override or hw.recommended_device
     device = torch.device(device_str if torch.cuda.is_available() else "cpu")
 
     # ── 1. Load model (shared) ──
@@ -411,19 +403,19 @@ def run_evaluation(
     # ── 9. Aggregate results ──
     results = {
         "hardware": {
-            "gpu_name": gpu_info["name"],
-            "vram_gb": gpu_info["vram_gb"],
+            "gpu_name": hw.name,
+            "vram_gb": hw.vram_gb,
             "device": str(device),
         },
         "model": {
             "path": model_path,
-            "type": model_info["model_type"],
-            "num_layers": model_info["num_layers"],
-            "num_q_heads": model_info["num_q_heads"],
-            "num_kv_heads": model_info["num_kv_heads"],
-            "d_head": model_info["d_head"],
-            "gqa_ratio": model_info["gqa_ratio"],
-            "size_category": model_info["model_size_category"],
+            "type": profile.model_name,
+            "num_layers": profile.num_layers,
+            "num_q_heads": profile.num_attention_heads,
+            "num_kv_heads": profile.num_kv_heads,
+            "d_head": profile.d_head,
+            "gqa_ratio": profile.gqa_ratio,
+            "size_category": profile.model_size_category,
         },
         "config": {
             "n_steps_k": cfg.get_n_steps_k(),

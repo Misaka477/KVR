@@ -34,8 +34,6 @@ from rina.ds_kv_cache import (
     DSKVCacheStore,
     encode_kv_cache,
     decode_kvcache_store,
-)
-from rina.incremental_decode import (
     init_incremental_store,
     incremental_encode_step,
     finalize_store,

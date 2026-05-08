@@ -1,0 +1,181 @@
+route,label,transform_mode,adapt_mask,cross_head,prompt,char_match,prefix_match,native_output,route_output,time_s
+baseline,0_Baseline,none,0,0,The future of AI is,0.0726,1," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of"," here with the conversation between digital transformation
+Artificial Intelligence
+Researcher, and video editing and at art?
+We often we’re sad coincidence has become more players",5.1
+baseline,0_Baseline,none,0,0,Once upon a time in a galaxy far far awa,0.0682,2,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,",", our Profile was the 2016, people used credit cards, there lived no angel wing'd by deba' remotely contiunea CLAU TOKEN",8.1
+baseline,0_Baseline,none,0,0,The capital of France is,0.1208,6," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,"," Paris. Choose between the capital of Europe's wealth. point. And what’s the capital, is Paris, in Ex-U.S. According to the Spanish flute",11.0
+baseline,0_Baseline,none,0,0,To solve the equation x^2 + 2x + 1 = 0 w,0.0301,1," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can"," use:
+(1. You like to get the formula conf</a /> by …
+Step 1) Determine the x + x + 1/0?
+",13.8
+baseline,0_Baseline,none,0,0,Deep learning has revolutionized compute,0.0437,1," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized"," enabling vision products, and many tasks such things. Humans have been able to interpretable camera. Vgg8.Pilot. It has to even the semantic image",16.9
+baseline,0_Baseline,none,0,0,The three laws of thermodynamics state t,0.1014,2, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example," energy cannot be energy is what?
+A) that a closed system must obeyed to free energy. These laws conversion factor (1 June through order. Ths",19.9
+baseline,0_Baseline,none,0,0,In quantum mechanics the Schrödinger equ,0.0978,10," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes", the time development of a wave propagation of the dynamics within the probability of particles and is the global solutions of a complete set of first order phase superpositions of the,23.0
+baseline,0_Baseline,none,0,0,Python is a high-level programming langu,0.0374,1," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we"," is commonly used to create applications, as it was originally designed for beginners and data anonymized from fundamental units
+PairingNetworkMessageFormatTemplate:Authority-Control Your",26.1
+R3_DCT,R3_DCT,dct,0,0,The future of AI is,0.012,0," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of","[ERROR: shape '[32, 128]' is invalid for input of size 512]",3.5
+R3_DCT,R3_DCT,dct,0,0,Once upon a time in a galaxy far far awa,0.053,0,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.6
+R3_DCT,R3_DCT,dct,0,0,The capital of France is,0.0268,0," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,","[ERROR: shape '[32, 128]' is invalid for input of size 512]",3.6
+R3_DCT,R3_DCT,dct,0,0,To solve the equation x^2 + 2x + 1 = 0 w,0.0075,0," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can","[ERROR: shape '[80, 128]' is invalid for input of size 1280]",3.7
+R3_DCT,R3_DCT,dct,0,0,Deep learning has revolutionized compute,0.025,0," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.7
+R3_DCT,R3_DCT,dct,0,0,The three laws of thermodynamics state t,0.0,0, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example,"[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.7
+R3_DCT,R3_DCT,dct,0,0,In quantum mechanics the Schrödinger equ,0.0258,0," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.8
+R3_DCT,R3_DCT,dct,0,0,Python is a high-level programming langu,0.0208,0," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.8
+R3_DWT,R3_DWT,dwt,0,0,The future of AI is,0.012,0," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of","[ERROR: shape '[32, 128]' is invalid for input of size 512]",2.9
+R3_DWT,R3_DWT,dwt,0,0,Once upon a time in a galaxy far far awa,0.053,0,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.0
+R3_DWT,R3_DWT,dwt,0,0,The capital of France is,0.0268,0," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,","[ERROR: shape '[32, 128]' is invalid for input of size 512]",3.0
+R3_DWT,R3_DWT,dwt,0,0,To solve the equation x^2 + 2x + 1 = 0 w,0.0075,0," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can","[ERROR: shape '[80, 128]' is invalid for input of size 1280]",3.0
+R3_DWT,R3_DWT,dwt,0,0,Deep learning has revolutionized compute,0.025,0," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.1
+R3_DWT,R3_DWT,dwt,0,0,The three laws of thermodynamics state t,0.0,0, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example,"[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.1
+R3_DWT,R3_DWT,dwt,0,0,In quantum mechanics the Schrödinger equ,0.0258,0," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.1
+R3_DWT,R3_DWT,dwt,0,0,Python is a high-level programming langu,0.0208,0," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.2
+R3_AUTO,R3_AUTO,auto,0,0,The future of AI is,0.012,0," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of","[ERROR: shape '[32, 128]' is invalid for input of size 512]",2.0
+R3_AUTO,R3_AUTO,auto,0,0,Once upon a time in a galaxy far far awa,0.053,0,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,","[ERROR: shape '[48, 128]' is invalid for input of size 768]",2.1
+R3_AUTO,R3_AUTO,auto,0,0,The capital of France is,0.0268,0," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,","[ERROR: shape '[32, 128]' is invalid for input of size 512]",2.1
+R3_AUTO,R3_AUTO,auto,0,0,To solve the equation x^2 + 2x + 1 = 0 w,0.0075,0," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can","[ERROR: shape '[80, 128]' is invalid for input of size 1280]",2.2
+R3_AUTO,R3_AUTO,auto,0,0,Deep learning has revolutionized compute,0.025,0," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized","[ERROR: shape '[48, 128]' is invalid for input of size 768]",2.2
+R3_AUTO,R3_AUTO,auto,0,0,The three laws of thermodynamics state t,0.0,0, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example,"[ERROR: shape '[48, 128]' is invalid for input of size 768]",2.2
+R3_AUTO,R3_AUTO,auto,0,0,In quantum mechanics the Schrödinger equ,0.0258,0," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes","[ERROR: shape '[48, 128]' is invalid for input of size 768]",2.3
+R3_AUTO,R3_AUTO,auto,0,0,Python is a high-level programming langu,0.0208,0," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we","[ERROR: shape '[48, 128]' is invalid for input of size 768]",2.3
+R1_Mask,R1_AdaptMask,none,1,0,The future of AI is,0.0575,1," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of"," here
+Hyper-Clean Energy
+Predictions and great products Artificial Intelligence - Artificial Intelligence stopped serving AI systems and art.
+Episode 2019 Software What Asian",9.1
+R1_Mask,R1_AdaptMask,none,1,0,Once upon a time in a galaxy far far awa,0.0677,2,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,",", a swim cutoff, Sith Lords link glorious space-fuckingout There was a group h8 LONG ago… read about 2013 was travel can not existing",16.2
+R1_Mask,R1_AdaptMask,none,1,0,The capital of France is,0.094,6," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,"," Paris........
+African safari b a sparkling wine refers to the heart of this is Paris, the capital, Paris
+""Europe",23.5
+R1_Mask,R1_AdaptMask,none,1,0,To solve the equation x^2 + 2x + 1 = 0 w,0.0592,1," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can", use the quadratic method follows a solution (i want to have none of the grid we raised toivary = grid of the trivial procedure in a root common factors,31.0
+R1_Mask,R1_AdaptMask,none,1,0,Deep learning has revolutionized compute,0.0359,1," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized"," enabling complex natural muscles like never fully exploiting the edge detection, partly due to several ways. Deep Learning Framework SAR Using Multiresolution as the most advance computing power",38.0
+R1_Mask,R1_AdaptMask,none,1,0,The three laws of thermodynamics state t,0.0611,2, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example," energy and increase in equilibrium cannot be formed attempts to evolve.
+A solid can be used to associatea consumer electronics requires studying thermodynamics (1) State of matter",45.2
+R1_Mask,R1_AdaptMask,none,1,0,In quantum mechanics the Schrödinger equ,0.1097,5," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes"," the state of nature
+$${^{12 May 2003 Cadillac, in general, with a classifying space-time entangled matter can behave of the deterministic",53.1
+R1_Mask,R1_AdaptMask,none,1,0,Python is a high-level programming langu,0.0573,1," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we"," is quite often receives love of excellent to do practical use within 0 and it is intimately linked structures and python, is used by Web pages. In this post",60.3
+R1_MaskStrong,R1_MaskStrong,none,1,0,The future of AI is,0.0361,1," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of"," here.
+Simple. Thus the topic of heated with Sketch Up
+AI and it's not only can get structured data ethereal motion or outside, appears only tertiary",10.0
+R1_MaskStrong,R1_MaskStrong,none,1,0,Once upon a time in a galaxy far far awa,0.1136,8,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,",", there was a cosmically far far way… “RPG's Foley-like ‘Science Dusk. There were existence on this in this short film and Reggie",18.3
+R1_MaskStrong,R1_MaskStrong,none,1,0,The capital of France is,0.1141,8," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,"," Paris, of course kind and had out of reach the capital authorised by Französ as the residence. This city Paris is located at rue Belles/romardin",29.0
+R1_MaskStrong,R1_MaskStrong,none,1,0,To solve the equation x^2 + 2x + 1 = 0 w,0.0933,1," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can"," use the first multiply each variable x + 1=  we used the below steps
+A linear Regression Line or just plug in Gaussian almost identical equations are",40.3
+R1_MaskStrong,R1_MaskStrong,none,1,0,Deep learning has revolutionized compute,0.0495,1," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized"," enabling deeper than traditional ways, neural networks. Deep learning
+. According to York a greatly increasing number that its task, A D especially in-depth semantic segmentation in",49.3
+R1_MaskStrong,R1_MaskStrong,none,1,0,The three laws of thermodynamics state t,0.0625,2, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example, energy cannot be does energy changes to alter than percentage of the three types of possible combinations of state such a concept osmensing of all the energy cannot be applied,58.9
+R1_MaskStrong,R1_MaskStrong,none,1,0,In quantum mechanics the Schrödinger equ,0.1484,5," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes"," the apparent uncertainty as function. In eigenvalues of Schrösspiel descrete states. By calculating an $ [arX=""e-derives such",67.9
+R1_MaskStrong,R1_MaskStrong,none,1,0,Python is a high-level programming langu,0.0497,1," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we"," is commonly used for multiple variables and is easily writable. programmers love. It is Object-Oriented languages, Python provides an ideal for data called Programming, implemented",76.8
+R1R3_AUTO,R1+R3_AUTO+Mask,auto,1,0,The future of AI is,0.012,0," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of","[ERROR: shape '[32, 128]' is invalid for input of size 512]",5.1
+R1R3_AUTO,R1+R3_AUTO+Mask,auto,1,0,Once upon a time in a galaxy far far awa,0.053,0,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,","[ERROR: shape '[48, 128]' is invalid for input of size 768]",5.3
+R1R3_AUTO,R1+R3_AUTO+Mask,auto,1,0,The capital of France is,0.0268,0," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,","[ERROR: shape '[32, 128]' is invalid for input of size 512]",5.4
+R1R3_AUTO,R1+R3_AUTO+Mask,auto,1,0,To solve the equation x^2 + 2x + 1 = 0 w,0.0075,0," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can","[ERROR: shape '[80, 128]' is invalid for input of size 1280]",5.6
+R1R3_AUTO,R1+R3_AUTO+Mask,auto,1,0,Deep learning has revolutionized compute,0.025,0," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized","[ERROR: shape '[48, 128]' is invalid for input of size 768]",5.7
+R1R3_AUTO,R1+R3_AUTO+Mask,auto,1,0,The three laws of thermodynamics state t,0.0,0, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example,"[ERROR: shape '[48, 128]' is invalid for input of size 768]",5.9
+R1R3_AUTO,R1+R3_AUTO+Mask,auto,1,0,In quantum mechanics the Schrödinger equ,0.0258,0," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes","[ERROR: shape '[48, 128]' is invalid for input of size 768]",6.0
+R1R3_AUTO,R1+R3_AUTO+Mask,auto,1,0,Python is a high-level programming langu,0.0208,0," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we","[ERROR: shape '[48, 128]' is invalid for input of size 768]",6.2
+R1R3_DCT,R1+R3_DCT+Mask,dct,1,0,The future of AI is,0.012,0," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of","[ERROR: shape '[32, 128]' is invalid for input of size 512]",5.1
+R1R3_DCT,R1+R3_DCT+Mask,dct,1,0,Once upon a time in a galaxy far far awa,0.053,0,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,","[ERROR: shape '[48, 128]' is invalid for input of size 768]",5.2
+R1R3_DCT,R1+R3_DCT+Mask,dct,1,0,The capital of France is,0.0268,0," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,","[ERROR: shape '[32, 128]' is invalid for input of size 512]",5.3
+R1R3_DCT,R1+R3_DCT+Mask,dct,1,0,To solve the equation x^2 + 2x + 1 = 0 w,0.0075,0," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can","[ERROR: shape '[80, 128]' is invalid for input of size 1280]",5.5
+R1R3_DCT,R1+R3_DCT+Mask,dct,1,0,Deep learning has revolutionized compute,0.025,0," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized","[ERROR: shape '[48, 128]' is invalid for input of size 768]",5.7
+R1R3_DCT,R1+R3_DCT+Mask,dct,1,0,The three laws of thermodynamics state t,0.0,0, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example,"[ERROR: shape '[48, 128]' is invalid for input of size 768]",5.8
+R1R3_DCT,R1+R3_DCT+Mask,dct,1,0,In quantum mechanics the Schrödinger equ,0.0258,0," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes","[ERROR: shape '[48, 128]' is invalid for input of size 768]",5.9
+R1R3_DCT,R1+R3_DCT+Mask,dct,1,0,Python is a high-level programming langu,0.0208,0," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we","[ERROR: shape '[48, 128]' is invalid for input of size 768]",6.1
+R2_CrossHead,R2_CrossHeadRes,none,0,1,The future of AI is,0.0361,1," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of"," here | IoT and it's work at “no chimp pharma know Land Re: Has Hi Care
+The prophet Elijah.. 😱, respectively, we",7.7
+R2_CrossHead,R2_CrossHeadRes,none,0,1,Once upon a time in a galaxy far far awa,0.0985,2,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,",", NASA tested for this story told by Carabruh was an Israeli pilot education was the Doctor
+  1 note 40 an untitled once soon after",11.4
+R2_CrossHead,R2_CrossHeadRes,none,0,1,The capital of France is,0.1208,8," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,"," Paris, to meerkatihan Folkloride we Replica Calèges, and especially with the major cities, according to the new securities, located in the",15.3
+R2_CrossHead,R2_CrossHeadRes,none,0,1,To solve the equation x^2 + 2x + 1 = 0 w,0.087,1," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can"," use the first the following incos for a, the most general, initially we must recall the graphs these things we have following die to solve for a solution online",19.2
+R2_CrossHead,R2_CrossHeadRes,none,0,1,Deep learning has revolutionized compute,0.0471,1," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized"," enabling systems by reading between discovery many applications (and AI, making it is for years, by mimicking its mature deep learning encompasses exceptionally robust color effect. Computer",23.0
+R2_CrossHead,R2_CrossHeadRes,none,0,1,The three laws of thermodynamics state t,0.0508,2, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example," energy can continue to be carried out by, along with new knowledge and that efficiency.
+The two thousand years evolution of molecules combine under this article is based on the",26.2
+R2_CrossHead,R2_CrossHeadRes,none,0,1,In quantum mechanics the Schrödinger equ,0.0903,5," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes"," the combined...
+Schrössang and other than at a particle waves called Schröp. The Schröd:D Masse is the latter",30.1
+R2_CrossHead,R2_CrossHeadRes,none,0,1,Python is a high-level programming langu,0.0577,1," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we"," is popularly facilitates rapid development platform in fact is just like any loosely defined set, among others. It is very easy 8 bit village,
+Learn how to",33.6
+R2R3_DCT,R2+DCT_CrossHead,dct,0,1,The future of AI is,0.012,0," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of","[ERROR: shape '[32, 128]' is invalid for input of size 512]",3.3
+R2R3_DCT,R2+DCT_CrossHead,dct,0,1,Once upon a time in a galaxy far far awa,0.053,0,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.3
+R2R3_DCT,R2+DCT_CrossHead,dct,0,1,The capital of France is,0.0268,0," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,","[ERROR: shape '[32, 128]' is invalid for input of size 512]",3.3
+R2R3_DCT,R2+DCT_CrossHead,dct,0,1,To solve the equation x^2 + 2x + 1 = 0 w,0.0075,0," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can","[ERROR: shape '[80, 128]' is invalid for input of size 1280]",3.4
+R2R3_DCT,R2+DCT_CrossHead,dct,0,1,Deep learning has revolutionized compute,0.025,0," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.4
+R2R3_DCT,R2+DCT_CrossHead,dct,0,1,The three laws of thermodynamics state t,0.0,0, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example,"[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.5
+R2R3_DCT,R2+DCT_CrossHead,dct,0,1,In quantum mechanics the Schrödinger equ,0.0258,0," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.5
+R2R3_DCT,R2+DCT_CrossHead,dct,0,1,Python is a high-level programming langu,0.0208,0," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.6
+R1R2R3,R1+R2+R3_Full,dct,1,1,The future of AI is,0.012,0," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of","[ERROR: shape '[32, 128]' is invalid for input of size 512]",3.7
+R1R2R3,R1+R2+R3_Full,dct,1,1,Once upon a time in a galaxy far far awa,0.053,0,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.8
+R1R2R3,R1+R2+R3_Full,dct,1,1,The capital of France is,0.0268,0," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,","[ERROR: shape '[32, 128]' is invalid for input of size 512]",4.0
+R1R2R3,R1+R2+R3_Full,dct,1,1,To solve the equation x^2 + 2x + 1 = 0 w,0.0075,0," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can","[ERROR: shape '[80, 128]' is invalid for input of size 1280]",4.1
+R1R2R3,R1+R2+R3_Full,dct,1,1,Deep learning has revolutionized compute,0.025,0," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized","[ERROR: shape '[48, 128]' is invalid for input of size 768]",4.2
+R1R2R3,R1+R2+R3_Full,dct,1,1,The three laws of thermodynamics state t,0.0,0, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example,"[ERROR: shape '[48, 128]' is invalid for input of size 768]",4.4
+R1R2R3,R1+R2+R3_Full,dct,1,1,In quantum mechanics the Schrödinger equ,0.0258,0," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes","[ERROR: shape '[48, 128]' is invalid for input of size 768]",4.5
+R1R2R3,R1+R2+R3_Full,dct,1,1,Python is a high-level programming langu,0.0208,0," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we","[ERROR: shape '[48, 128]' is invalid for input of size 768]",4.6
+R1R2R3_AUTO,R1+R2+R3_AUTO,auto,1,1,The future of AI is,0.012,0," all about trust
+A new study suggests that as artificial intelligence (AI) becomes more ubiquitous and is increasingly used in our everyday lives, trust may be one of","[ERROR: shape '[32, 128]' is invalid for input of size 512]",2.6
+R1R2R3_AUTO,R1+R2+R3_AUTO,auto,1,1,Once upon a time in a galaxy far far awa,0.053,0,", there lived a lonely old man named Mr. Potato. He had always lived his life alone, but one day, fate changed his destiny. One day,","[ERROR: shape '[48, 128]' is invalid for input of size 768]",2.6
+R1R2R3_AUTO,R1+R2+R3_AUTO,auto,1,1,The capital of France is,0.0268,0," Paris, which is often described as the city of lights.
+Paris has its own very special style and atmosphere, a blend of old, traditional, and modern,","[ERROR: shape '[32, 128]' is invalid for input of size 512]",2.7
+R1R2R3_AUTO,R1+R2+R3_AUTO,auto,1,1,To solve the equation x^2 + 2x + 1 = 0 w,0.0075,0," must find the roots.
+The roots of the given equation are: (-1,-1) as they satisfy the given equation.
+To solve this equation, we can","[ERROR: shape '[80, 128]' is invalid for input of size 1280]",2.8
+R1R2R3_AUTO,R1+R2+R3_AUTO,auto,1,1,Deep learning has revolutionized compute,0.025,0," using a human-like ability to learn complex concepts from large volumes of data. The field of medical imaging, such as CT and MRI, is also being revolutionized","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.0
+R1R2R3_AUTO,R1+R2+R3_AUTO,auto,1,1,The three laws of thermodynamics state t,0.0,0, every process is either an endothermic process or an exothermic process. It's called endothermic when heat is absorbed during a process. An example,"[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.1
+R1R2R3_AUTO,R1+R2+R3_AUTO,auto,1,1,In quantum mechanics the Schrödinger equ,0.0258,0," the time evolution of a wavefunction, Ψ, for a system in a state of interaction with an external electromagnetic field.
+The Schrödinger equation describes","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.2
+R1R2R3_AUTO,R1+R2+R3_AUTO,auto,1,1,Python is a high-level programming langu,0.0208,0," has become popular for web development. However, if you are new to Python, you may not be familiar with all of its modules. In this article, we","[ERROR: shape '[48, 128]' is invalid for input of size 768]",3.4

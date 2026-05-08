@@ -7,11 +7,11 @@ import torch, sys, logging, math, time, argparse
 sys.path.insert(0, ".")
 
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, AutoConfig
 
 from rina.config import DSKVCacheConfig
 from rina.ds_kv_cache import encode_kv_cache, decode_kvcache_store
-from scripts.auto_config import detect_gpu_info, detect_model_info, generate_optimal_config
+from rina.model_adapter import HardwareProfile, ModelProfile, ModelAdapter
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 _log = logging.getLogger("stress_test")
@@ -124,9 +124,11 @@ def main():
     _log.info("GPU: %s (%.1f GB VRAM)", torch.cuda.get_device_name(0), total_vram)
 
     # Auto-detect GPU & model info, generate optimal config
-    gpu_info = detect_gpu_info()
-    model_info = detect_model_info(model_path)
-    cfg = generate_optimal_config(gpu_info, model_info)
+    hw = HardwareProfile.detect()
+    hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    profile = ModelProfile.from_hf_config(hf_config)
+    adapter = ModelAdapter(profile, hw)
+    cfg = adapter.recommend_config()
 
     _log.info("Auto Config: n_steps_k=%d, n_steps_v=%d, gamma=%.2f, proj_beta=%.2f, v_ortho=%s",
               cfg.get_n_steps_k(), cfg.get_n_steps_v(),

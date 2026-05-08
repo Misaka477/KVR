@@ -115,78 +115,37 @@ ResidualAlphas = torch.Tensor  # shape (N, *tiles)
 # ---------------------------------------------------------------------------
 # Bit-packing utilities (§12 — compressed storage)
 # ---------------------------------------------------------------------------
+# Canonical implementations live in rina.utils.bit_packing.
+# Duplicated here to avoid circular imports (modules → rina → modules).
 
 BITS_PER_PACK = 32  # pack 32 signs per int32 element
 
 
 def pack_bases(bases: ResidualBases) -> torch.Tensor:
-    """Pack float (-1/+1) bases into bit-packed int32 tensor.
-
-    Parameters
-    ----------
-    bases:
-        ``(..., M)`` float tensor with values in ``{-1, +1}``.
-
-    Returns
-    -------
-    packed:
-        ``(..., M_packed)`` int32 tensor where each element encodes
-        up to 32 consecutive signs (LSB = leftmost sign).
-        ``M_packed = ceil(M / 32)``.  Trailing bits of the last word
-        are zero-padded.
-    """
+    """Pack float (-1/+1) bases into bit-packed int32 tensor."""
     shape = bases.shape
     M = shape[-1]
     M_packed = (M + BITS_PER_PACK - 1) // BITS_PER_PACK
-
-    # Pad to multiple of 32 with zeros (→ sign=+1 after unpack → neutral)
     pad_len = M_packed * BITS_PER_PACK - M
     if pad_len > 0:
         bases = torch.nn.functional.pad(bases, (0, pad_len), value=1.0)
-
-    # Convert {-1,+1} → {0,1}
-    bits = (bases > 0).to(torch.uint8)  # 0 or 1
-
-    # Reshape: (..., M_packed, 32)
+    bits = (bases > 0).to(torch.uint8)
     bits = bits.reshape(*shape[:-1], M_packed, BITS_PER_PACK)
-
-    # Pack into int32 via bit-shift accumulation
     bit_weights = 1 << torch.arange(BITS_PER_PACK, device=bases.device, dtype=torch.int32)
-    packed = (bits.to(torch.int32) * bit_weights).sum(dim=-1)  # (..., M_packed)
-
+    packed = (bits.to(torch.int32) * bit_weights).sum(dim=-1)
     return packed.to(torch.int32)
 
 
 def unpack_bases(packed: torch.Tensor) -> ResidualBases:
-    """Unpack bit-packed int32 tensor back to float (-1/+1) bases.
-
-    Parameters
-    ----------
-    packed:
-        ``(..., M_packed)`` int32 tensor.
-
-    Returns
-    -------
-    bases:
-        ``(..., M_packed * 32)`` float tensor with values in ``{-1, +1}``.
-        Caller should slice ``[..., :original_M]`` if trailing padding
-        was introduced during packing.
-    """
+    """Unpack bit-packed int32 tensor back to float (-1/+1) bases."""
     device = packed.device
     shape = packed.shape
     M_packed = shape[-1]
-
-    # Extract each bit position
     bit_weights = 1 << torch.arange(BITS_PER_PACK, device=device, dtype=torch.int32)
-    packed_expanded = packed.unsqueeze(-1)  # (..., M_packed, 1)
-    bits = (packed_expanded & bit_weights) != 0  # (..., M_packed, 32)
-
-    # Convert bool → {-1, +1}
-    bases = bits.to(torch.float32) * 2.0 - 1.0  # False→-1, True→+1
-
-    # Flatten last two dims: (..., M_packed * 32)
+    packed_expanded = packed.unsqueeze(-1)
+    bits = (packed_expanded & bit_weights) != 0
+    bases = bits.to(torch.float32) * 2.0 - 1.0
     bases = bases.reshape(*shape[:-1], M_packed * BITS_PER_PACK)
-
     return bases
 
 
@@ -206,6 +165,7 @@ def residual_pursuit_nd(
     order2_c2: float = 0.5,
     zero_mean_integrator2: bool = False,
     mask: Optional[torch.Tensor] = None,
+    use_mask_gating: bool = True,
     initial_momentum: Optional[torch.Tensor] = None,
     initial_integrator2: Optional[torch.Tensor] = None,
     return_momentum: bool = False,
@@ -263,6 +223,12 @@ def residual_pursuit_nd(
         0 = padding.  When provided, alpha is normalised by the number of
         valid elements per tile rather than ``M``, preventing amplitude
         underestimation for partially-filled tiles (§10.3).
+    use_mask_gating:
+        If ``True`` and *mask* is provided, zero out padding regions in
+        ``w_hat``, ``remaining``, ``momentum``, and ``integrator2`` at the
+        end of each Σ-Δ iteration.  This prevents encoding bits from being
+        wasted on zero-padding and improves reconstruction quality for
+        partially-filled tiles (§10.3.1).
     initial_momentum:
         ``(..., M)`` initial first-order integrator state.  Used for
         cross-head error sharing (§8.1.9) where the Σ-Δ error from head i
@@ -392,6 +358,19 @@ def residual_pursuit_nd(
             #   = (prev_target - prev_contribution) - step_eta * e_null
             momentum = momentum - step_eta * e_null
 
+        # ---- mask-based gating: zero out padding regions (§10.3.1) ----
+        # After all updates for this step, multiply state tensors by mask
+        # to prevent Σ-Δ error from accumulating in zero-padded regions.
+        # The bases tensor B is deliberately NOT masked (it stays ±1 for
+        # bit-packing compatibility; its contribution in padding is zeroed
+        # by the reconstructed w_hat state being masked below).
+        if mask is not None and use_mask_gating:
+            w_hat = w_hat * mask.to(w_hat.dtype)
+            remaining = remaining * mask.to(remaining.dtype)
+            momentum = momentum * mask.to(momentum.dtype)
+            if use_order2:
+                integrator2 = integrator2 * mask.to(integrator2.dtype)
+
         alphas_list.append(alpha)
         if return_bases:
             bases_list.append(B)
@@ -432,6 +411,7 @@ def encode_matrix(
     mask_outlier_threshold: float = 3.0,
     mask_proj_beta_boost: float = 0.5,
     mask_n_steps_boost: int = 1,
+    use_mask_gating: bool = True,
     initial_momentum: Optional[torch.Tensor] = None,
     initial_integrator2: Optional[torch.Tensor] = None,
     return_momentum: bool = False,
@@ -491,6 +471,10 @@ def encode_matrix(
         E.g. 0.5 means proj_beta * 1.5.
     mask_n_steps_boost:
         Extra pursuit iterations for sensitive tiles (≥0).
+    use_mask_gating:
+        Forwarded to :func:`residual_pursuit_nd`.  When ``True`` and a
+        mask is available, zeroes out padding regions in the Σ-Δ state
+        at each iteration.  See §10.3.1.
     initial_momentum:
         ``(..., M)`` initial first-order integrator.  Used for cross-head
         error sharing (§8.1.9).
@@ -589,6 +573,12 @@ def encode_matrix(
             momentum_out = torch.zeros(n_tiles, M, device=tiles.device, dtype=tiles.dtype)
             integrator2_out = torch.zeros(n_tiles, M, device=tiles.device, dtype=tiles.dtype)
 
+        # ── Expand (1, M) momentum / integrator2 to (n_tiles, M) ──
+        if initial_momentum is not None and initial_momentum.shape[0] == 1 and n_tiles > 1:
+            initial_momentum = initial_momentum.expand(n_tiles, -1).contiguous()
+        if initial_integrator2 is not None and initial_integrator2.shape[0] == 1 and n_tiles > 1:
+            initial_integrator2 = initial_integrator2.expand(n_tiles, -1).contiguous()
+
         for i in range(n_tiles):
             v = tile_vars[i].item()
             m = tile_maxabs[i].item()
@@ -617,6 +607,7 @@ def encode_matrix(
                 order2_c2=order2_c2,
                 zero_mean_integrator2=zero_mean_integrator2,
                 mask=mask_i,
+                use_mask_gating=use_mask_gating,
                 initial_momentum=initial_momentum[i:i+1] if initial_momentum is not None else None,
                 initial_integrator2=initial_integrator2[i:i+1] if initial_integrator2 is not None else None,
                 return_momentum=return_momentum,
@@ -658,6 +649,7 @@ def encode_matrix(
         order2_c2=order2_c2,
         zero_mean_integrator2=zero_mean_integrator2,
         mask=mask_patches if has_padding else None,
+        use_mask_gating=use_mask_gating,
         initial_momentum=initial_momentum,
         initial_integrator2=initial_integrator2,
         return_momentum=return_momentum,

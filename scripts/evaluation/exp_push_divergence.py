@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rina.config import DSKVCacheConfig
 from rina.model_wrapper import DSKVCacheModel
-from scripts.auto_config import detect_gpu_info, detect_model_info, generate_optimal_config
+from rina.model_adapter import HardwareProfile, ModelProfile, ModelAdapter
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 _logger = logging.getLogger("exp_push_divergence")
@@ -178,16 +178,17 @@ def main():
 
     args = p.parse_args()
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
     # ── Hardware & Model ──
-    gpu_info = detect_gpu_info()
-    model_info = detect_model_info(args.model)
-    device = torch.device(gpu_info["recommended_device"] if torch.cuda.is_available() else "cpu")
+    hw = HardwareProfile.detect()
+    hf_config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+    profile = ModelProfile.from_hf_config(hf_config)
+    device = torch.device(hw.recommended_device if torch.cuda.is_available() else "cpu")
 
-    _logger.info(f"GPU: {gpu_info['name']} ({gpu_info['vram_gb']} GB)")
-    _logger.info(f"Model: {model_info['model_type']} L={model_info['num_layers']} "
-                 f"GQA={model_info['gqa_ratio']}x d_head={model_info['d_head']}")
+    _logger.info(f"GPU: {hw.name} ({hw.vram_gb} GB)")
+    _logger.info(f"Model: {profile.model_name} L={profile.num_layers} "
+                 f"GQA={profile.gqa_ratio}x d_head={profile.d_head}")
 
     # ── Load model ──
     _logger.info(f"Loading model {args.model} ...")

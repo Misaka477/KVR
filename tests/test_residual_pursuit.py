@@ -113,7 +113,7 @@ class TestTileEncodeDecode(unittest.TestCase):
     def test_exact_shape_tile_multiple(self):
         """Matrix that is an exact multiple of tile_size → no padding."""
         w = torch.randn(32, 64, device=TORCH_DEVICE, dtype=TORCH_DTYPE)  # 16×
-        bases, alphas, shape = encode_matrix(w, n_steps=5, tile_size=16)
+        bases, alphas, shape, *_ = encode_matrix(w, n_steps=5, tile_size=16)
         w_hat = decode_from_bases(bases, alphas, shape, tile_size=16)
         self.assertEqual(w_hat.shape, w.shape)
 
@@ -122,7 +122,7 @@ class TestTileEncodeDecode(unittest.TestCase):
         for shape in [(13, 30), (31, 31), (19, 47)]:
             with self.subTest(shape=shape):
                 w = torch.randn(*shape, device=TORCH_DEVICE, dtype=TORCH_DTYPE)
-                bases, alphas, orig = encode_matrix(w, n_steps=5, tile_size=16)
+                bases, alphas, orig, *_ = encode_matrix(w, n_steps=5, tile_size=16)
                 w_hat = decode_from_bases(bases, alphas, orig, tile_size=16)
                 self.assertEqual(w_hat.shape, (shape[0], shape[1]))
 
@@ -665,7 +665,7 @@ class TestDifferentialCancellation(unittest.TestCase):
     def test_single_encoding_identical_to_standard(self):
         """Encoding A (sign_flip=+1) should be identical to standard RBP."""
         # Standard RBP (via encode_matrix round-trip)
-        bases, alphas, shape = encode_matrix(
+        bases, alphas, shape, *_ = encode_matrix(
             self.w_mat, n_steps=5, tile_size=self.TILE, beta=0.0,
         )
         ŵ_std = decode_from_bases(bases, alphas, shape, tile_size=self.TILE)
@@ -1098,7 +1098,7 @@ class BitPackingTest(unittest.TestCase):
 
     def test_pack_unpack_roundtrip(self):
         """pack_bases → unpack_bases must recover original signs exactly."""
-        from modules.residual_pursuit import pack_bases, unpack_bases
+        from rina.utils.bit_packing import pack_bases, unpack_bases
 
         bases = torch.randint(0, 2, (self.N_STEPS, 10, self.TILE * self.TILE), dtype=torch.float32)
         bases[bases == 0] = -1.0
@@ -1113,7 +1113,7 @@ class BitPackingTest(unittest.TestCase):
 
     def test_pack_unpack_various_shapes(self):
         """Edge cases: odd M, odd n_tiles, single step, single tile."""
-        from modules.residual_pursuit import pack_bases, unpack_bases
+        from rina.utils.bit_packing import pack_bases, unpack_bases
 
         combos = [
             (1, 1, 256),      # single step, single tile, 16×16
@@ -1140,7 +1140,7 @@ class BitPackingTest(unittest.TestCase):
         DS-KVCache full roundtrip is tested separately in 
         test_roundtrip_encode_decode_with_packing.
         """
-        from modules.residual_pursuit import pack_bases, unpack_bases
+        from rina.utils.bit_packing import pack_bases, unpack_bases
 
         # Pure binary {-1,+1} data — no zeros
         bases = torch.randint(0, 2, (self.N_STEPS, 24, self.TILE * self.TILE),
@@ -1164,7 +1164,7 @@ class BitPackingTest(unittest.TestCase):
 
     def test_bit_packing_granularity(self):
         """Packed int64: each word holds 32 signs → ceil(M/32) words."""
-        from modules.residual_pursuit import pack_bases, unpack_bases
+        from rina.utils.bit_packing import pack_bases, unpack_bases
 
         # M=256 → ceil(256/32)=8 words, exactly aligned
         bases = torch.randint(0, 2, (self.N_STEPS, 3, 256), dtype=torch.float32)

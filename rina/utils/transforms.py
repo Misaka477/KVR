@@ -425,9 +425,14 @@ def apply_inverse_transform(
     elif mode == TransformMode.AUTO:
         assert decisions is not None, "AUTO inverse requires per-tile decisions"
         result_parts = []
+        n_decisions = len(decisions)
         for i in range(n_tiles):
             t = transformed[i]  # (M,)
-            dec = decisions[i]
+            if i < n_decisions:
+                dec = decisions[i]
+            else:
+                # Extra rows from padding — use DCT as safe default
+                dec = "dct"
 
             if dec == "dct":
                 X = idct_2d(t.reshape(tile_size, tile_size))
@@ -465,11 +470,11 @@ def apply_inverse_transform(
     # ── Reshape to original spatial layout if requested ──
     if original_shape is not None:
         N_orig, d_head = original_shape
-        N_padded = n_tiles * tile_size  # rows after inverse transform
-        # Reshape flat (n_tiles, M) → (N_padded, d_head)
-        # Assert: n_tiles * M == N_padded * d_head
+        M = tile_size * tile_size
+        assert n_tiles * M % d_head == 0, \
+            f"apply_inverse_transform: {n_tiles}×{M}={n_tiles*M} not divisible by d_head={d_head}"
+        N_padded = n_tiles * M // d_head
         result = result.reshape(N_padded, d_head)
-        # Crop padding rows
         if N_padded > N_orig:
             result = result[:N_orig]
         return result

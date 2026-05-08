@@ -87,6 +87,16 @@ class DSKVCacheConfig:
         Enable inter-head Σ-Δ error propagation for GQA models.
     cross_head_error_bias : float
         Coupling strength for cross-head error sharing.
+    cross_head_residual : bool
+        Enable Route 2 — Cross-Head Reconstruction Residual Injection.
+        When True, each KV head encodes K/V with residual bias from the
+        previous head's reconstruction error (ε = X_orig - decode(encode(X))).
+        This distributes quantization error across KV heads in GQA groups.
+        Default False.
+    cross_head_residual_gamma : float
+        EMA decay factor for reconstruction residual accumulation
+        across KV heads (Route 2).  Range 0.05 – 0.50.
+        Default 0.25.
     cross_token_group : int
         Number of tokens to group into a single encoding tile.
         1 = no grouping (standard per-token tile).
@@ -176,6 +186,8 @@ class DSKVCacheConfig:
     cross_head_error_bias: float = 0.15
 
     # ── Route 2: Cross-head residual bias injection ────────────────────
+    cross_head_residual: bool = False
+    """Enable Route 2 — Cross-Head Reconstruction Residual injection (§8.2)."""
     cross_head_residual_gamma: float = 0.25
     """EMA decay factor for reconstruction residual accumulation across KV heads
     in a GQA group.  Higher = more aggressive bias injection."""
@@ -214,6 +226,12 @@ class DSKVCacheConfig:
     mask_n_steps_boost: int = 1
     mask_proj_beta_boost: float = 0.5
 
+    use_mask_gating: bool = True
+    """If True, zero out padding regions in the Σ-Δ state at each iteration
+    (single-step accumulation).  Prevents encoding bits from being wasted on
+    zero-padding and improves reconstruction quality for partially-filled
+    tiles (§10.3.1)."""
+
     # ── Noise shaping (cross-token projection) ──────────────────────────
     use_noise_shaping: bool = True
     proj_rank: int = 8
@@ -227,6 +245,19 @@ class DSKVCacheConfig:
 
     # ── Per-layer step mapping ──────────────────────────────────────────
     layer_step_map: Optional[Dict[int, Tuple[int, int]]] = None
+
+    # ── Protected layers (§8.1.8) ────────────────────────────────────────
+    protected_layers: List[int] = field(default_factory=lambda: [0, -1])
+    """Layer indices (0-based) that bypass 1-bit encoding.  Default: [0, -1]
+    (first and last layers).  -1 is interpreted as self._num_layers-1 at runtime."""
+
+    # ── Beta decay for decode (§8.1.11) ─────────────────────────────────
+    beta_decay_start: Optional[float] = None
+    """Initial beta for decode steps.  If None, uses self.beta."""
+    beta_decay_end: float = 0.02
+    """Final beta after decay completes."""
+    beta_decay_tokens: int = 256
+    """Number of decode steps to decay over."""
 
     def __post_init__(self):
         """Validate constraints and auto-adjust inconsistent settings.
@@ -306,3 +337,75 @@ class DSKVCacheConfig:
             _, v_steps = self.layer_step_map[layer_idx]
             return v_steps
         return self.get_n_steps_v()
+
+    def get_layer_config(self, layer_idx: int, num_layers: int) -> DSKVCacheConfig:
+        """Return a per-layer configuration snapshot for the given layer.
+
+        Returns *self* unchanged if no per-layer overrides are active;
+        otherwise returns a shallow copy with the layer-specific
+        ``n_steps_k`` and ``n_steps_v`` applied.
+
+        Parameters
+        ----------
+        layer_idx : int
+            0-based layer index.
+        num_layers : int
+            Total number of layers (used to resolve ``-1`` in
+            *protected_layers*).
+        """
+        if self.layer_step_map and layer_idx in self.layer_step_map:
+            k, v = self.layer_step_map[layer_idx]
+            import copy
+            cfg = copy.copy(self)
+            cfg.n_steps_k = k
+            cfg.n_steps_v = v
+            return cfg
+        return self
+
+    def is_layer_protected(self, layer_idx: int, num_layers: int) -> bool:
+        """Check if a layer should bypass 1-bit encoding."""
+        for idx in self.protected_layers:
+            if idx == -1:
+                idx = num_layers - 1
+            if idx == layer_idx:
+                return True
+        return False
+
+    def get_beta_for_decode_step(self, step_idx: int) -> float:
+        """Get the Σ-Δ beta for a decode step, with optional decay.
+
+        Parameters
+        ----------
+        step_idx : int
+            0-based decode step index.
+        """
+        if self.beta_decay_start is None:
+            return self.beta
+        if step_idx >= self.beta_decay_tokens:
+            return self.beta_decay_end
+        # Linear decay
+        alpha = step_idx / max(self.beta_decay_tokens, 1)
+        return self.beta_decay_start + alpha * (self.beta_decay_end - self.beta_decay_start)
+
+    def to_dict(self) -> dict:
+        """Serialize to a plain dict (JSON-compatible)."""
+        import copy
+        d = {}
+        for field_name in self.__dataclass_fields__:
+            value = getattr(self, field_name)
+            if isinstance(value, dict):
+                # Convert int keys to str for JSON
+                d[field_name] = {str(k): v for k, v in value.items()}
+            else:
+                d[field_name] = copy.deepcopy(value)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DSKVCacheConfig":
+        """Deserialize from dict."""
+        import copy
+        d_copy = copy.deepcopy(d)
+        # Restore int keys for layer_step_map
+        if "layer_step_map" in d_copy and isinstance(d_copy["layer_step_map"], dict):
+            d_copy["layer_step_map"] = {int(k): tuple(v) for k, v in d_copy["layer_step_map"].items()}
+        return cls(**{k: v for k, v in d_copy.items() if k in cls.__dataclass_fields__})

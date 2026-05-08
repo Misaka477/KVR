@@ -57,24 +57,39 @@ class DSKVCacheModel:
         model: AutoModelForCausalLM,
         tokenizer: AutoTokenizer,
         cfg: Optional[DSKVCacheConfig] = None,
+        *,
+        auto_detect: bool = True,
     ):
         self.model = model
         self.tokenizer = tokenizer
-        self.cfg = cfg or DSKVCacheConfig(
-            n_steps_k=3,
-            n_steps_v=5,
-            tile_size=16,
-            beta=0.15,
-            use_noise_shaping=True,
-            proj_rank=8,
-            proj_beta=0.3,
-            adaptive_eta=True,
-            use_differential=True,
-            diff_strategy="residual",
-            diff_residual_gamma=0.25,
-            diff_residual_n_steps=1,
-            v_orthogonal_transform=True,
-        )
+
+        if cfg is None and auto_detect:
+            from rina.model_adapter import ModelProfile, HardwareProfile, ModelAdapter
+            hw = HardwareProfile.detect()
+            profile = ModelProfile.from_hf_config(model.config)
+            adapter = ModelAdapter(profile, hw)
+            self.cfg = adapter.recommend_config(quality="balanced")
+            _logger.info("Auto-detected config: n_steps_k=%d, n_steps_v=%d, tile_size=%d, d_head=%d",
+                         self.cfg.get_n_steps_k(), self.cfg.get_n_steps_v(),
+                         self.cfg.tile_size, profile.d_head)
+        elif cfg is None:
+            self.cfg = DSKVCacheConfig(
+                n_steps_k=3,
+                n_steps_v=5,
+                tile_size=16,
+                beta=0.15,
+                use_noise_shaping=True,
+                proj_rank=8,
+                proj_beta=0.3,
+                adaptive_eta=True,
+                use_differential=True,
+                diff_strategy="residual",
+                diff_residual_gamma=0.25,
+                diff_residual_n_steps=1,
+                v_orthogonal_transform=True,
+            )
+        else:
+            self.cfg = cfg
 
         # Per-layer DS stores: list of (k_store, v_store) tuples
         self._ds_layers: List[Tuple[DSKVCacheStore, DSKVCacheStore]] = []
@@ -120,7 +135,7 @@ class DSKVCacheModel:
             # k_full: (1, n_kv_heads, T, d_head)
 
             # Get per-layer config (overrides n_steps_k/n_steps_v if layer_step_map)
-            layer_cfg = self.cfg.get_layer_config(layer_idx)
+            layer_cfg = self.cfg.get_layer_config(layer_idx, self._num_layers)
 
             # ── Protected layer (§8.1.8): skip 1-bit encoding ──────────
             is_protected = layer_idx in self.cfg.protected_layers
@@ -183,7 +198,7 @@ class DSKVCacheModel:
             v_stores = self._ds_layers[layer_idx][1]
 
             # Get per-layer config (overrides n_steps_k/n_steps_v if layer_step_map)
-            layer_cfg = self.cfg.get_layer_config(layer_idx)
+            layer_cfg = self.cfg.get_layer_config(layer_idx, self._num_layers)
 
             # Apply decayed beta for this decode step
             layer_cfg = copy.copy(layer_cfg)
