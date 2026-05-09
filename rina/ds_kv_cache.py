@@ -133,6 +133,14 @@ class DSKVCacheStore:
     # ── Calibration (noise shaping) ──
     svd_shaper: Optional[Dict] = None
 
+    # ── Periodic FP16 bypass (P1 anchor token refresh) ──
+    _bypass_map: Dict[int, torch.Tensor] = field(default_factory=dict)
+    """Position → FP16 tensor.  When refresh_interval > 0, every Nth
+    decode token is recorded here at full precision.  reconstruct_all
+    overwrites the corresponding positions with these values, giving
+    higher-quality K/V at anchor points and resetting accumulated
+    quantization error."""
+
     # ── Incremental buffer (§5) ──
     raw_buffer: Optional[torch.Tensor] = None      # (B, d_head) FP16, B < tile_size
     buffer_full: int = 0
@@ -232,12 +240,19 @@ class DSKVCacheStore:
         v_rotation: Optional[torch.Tensor] = None,
         initial_momentum: Optional[torch.Tensor] = None,
         initial_integrator2: Optional[torch.Tensor] = None,
+        bypass: bool = False,
     ) -> tuple:
         """Add one or more FP16 K/V rows.  When >= tile_size rows accumulate,
         encode a tile and commit to the bit-packed store.
 
         Protected mode (§8.1.8): raw_buffer grows unbounded, NO tile encoding
         ever triggered.  reconstruct_all() returns the raw buffer as-is.
+
+        Periodic FP16 bypass (P1): when ``bypass=True``, the token is still
+        Σ-Δ encoded normally AND also stored at full FP16 precision in
+        ``_bypass_map``.  reconstruct_all replaces the encoded token with
+        the FP16 version, effectively resetting accumulated error at that
+        position.
 
         Parameters
         ----------
@@ -247,6 +262,7 @@ class DSKVCacheStore:
         v_rotation: Orthogonal rotation matrix (V path only).
         initial_momentum: Cross-head Σ-Δ momentum from previous head (§8.1.9).
         initial_integrator2: Cross-head second-order integrator from previous head.
+        bypass: If True, record FP16 in _bypass_map (P1 anchor refresh).
 
         Returns
         -------
@@ -257,6 +273,15 @@ class DSKVCacheStore:
         B, d_head = new_vec.shape
         tile_size = self.tile_size
         is_v = v_rotation is not None  # V path flag: determines n_steps later
+
+        # ── Periodic FP16 bypass (P1 anchor refresh): record current position ──
+        if bypass and not self.protected:
+            pos = self.n_tokens  # logical position before this append
+            if v_rotation is not None:
+                bypass_vec = (new_vec.float() @ v_rotation.float()).half().squeeze(0)
+            else:
+                bypass_vec = new_vec.half().squeeze(0)
+            self._bypass_map[pos] = bypass_vec
 
         # ── Protected mode: just accumulate raw FP16, never encode ──
         if self.protected:
@@ -771,7 +796,15 @@ class DSKVCacheStore:
                         spatial_rows = seg_unpadded_rows * self.cross_token_group
                         spatial_cols = self.orig_shape[1] // self.cross_token_group
                     else:
-                        spatial_rows, spatial_cols = seg_orig_shape
+                        # orig_shape is in transform domain (e.g. (n_tiles, 256)).
+                        # Use _original_mat_shape to recover pre-transform spatial dims.
+                        orig_mat = getattr(self, '_original_mat_shape', None)
+                        if orig_mat is not None:
+                            d_head_spatial = orig_mat[1]
+                            spatial_rows = n_real_tokens + seg_transform_pad
+                            spatial_cols = d_head_spatial
+                        else:
+                            spatial_rows, spatial_cols = seg_orig_shape
                     seg_xform_decisions = transform_decisions[start:end] if transform_decisions is not None else None
                     mat_seg = apply_inverse_transform(
                         mat_seg,
@@ -809,6 +842,12 @@ class DSKVCacheStore:
                         "This is expected when cross_token_group > 1.",
                         R_T.shape, result.shape,
                     )
+
+        # ── Periodic FP16 bypass (P1): override bypass positions ──
+            if self._bypass_map:
+                for pos, fp16_tensor in self._bypass_map.items():
+                    if pos < result.shape[0]:
+                        result[pos] = fp16_tensor.to(result.dtype)
 
             return result
 
@@ -856,12 +895,18 @@ class DSKVCacheStore:
                     # inverse reshape.  orig_shape is in transform domain
                     # (e.g., (2, 256) for cross-token-grouped DCT).
                     # Convert to spatial padded shape: (N*G, d_head).
+                    transform_pad_rows = getattr(self, 'transform_pad_rows', 0)
                     if self.cross_token_group > 1:
                         spatial_rows = self.orig_shape[0] * self.cross_token_group
                         spatial_cols = self.orig_shape[1] // self.cross_token_group
                     else:
-                        spatial_rows, spatial_cols = self.orig_shape
-                    transform_pad_rows = getattr(self, 'transform_pad_rows', 0)
+                        orig_mat = getattr(self, '_original_mat_shape', None)
+                        if orig_mat is not None:
+                            d_head_spatial = orig_mat[1]
+                            spatial_rows = orig_mat[0] + transform_pad_rows
+                            spatial_cols = d_head_spatial
+                        else:
+                            spatial_rows, spatial_cols = self.orig_shape
                     mat = apply_inverse_transform(
                         mat,
                         mode=tf_mode,
@@ -986,6 +1031,12 @@ class DSKVCacheStore:
             if transform_pad_rows > 0 and result.shape[0] >= transform_pad_rows:
                 result = result[:-transform_pad_rows]
 
+        # ── Periodic FP16 bypass (P1): override bypass positions ──
+        if self._bypass_map:
+            for pos, fp16_tensor in self._bypass_map.items():
+                if pos < result.shape[0]:
+                    result[pos] = fp16_tensor.to(result.dtype)
+
         return result
 
     # ------------------------------------------------------------------
@@ -994,7 +1045,10 @@ class DSKVCacheStore:
 
     def update_stats(self):
         """Recalculate memory footprint."""
-        d_head = self.orig_shape[1] if self.orig_shape is not None else 64
+        d_head = self.orig_shape[1] if self.orig_shape is not None else (
+            self._original_mat_shape[1] if self._original_mat_shape is not None else
+            self.raw_buffer.shape[1] if self.raw_buffer is not None else 0
+        )
         total_tokens = self.n_tokens
         self.fp16_memory_bytes = total_tokens * d_head * 2
 

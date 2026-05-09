@@ -1,7 +1,0 @@
-﻿Config,TransformMode,K_SNR_dB,V_SNR_dB,K_CosSim,V_CosSim,Compression,DS_Mem_KB,Delta_K_SNR_dB,Delta_V_SNR_dB,Delta_K_CosSim,Delta_V_CosSim
-T0: none (baseline),none,6.57,10.74,0.8913,0.9649,4.27,29.75,0.0,0.0,0.0,0.0
-T1: fwht (legacy),fwht,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan
-T2: dct (Roadmap 3),dct,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan
-T3: dwt (Haar),dwt,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan
-T4: hybrid (DCT+DWT),hybrid,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan
-T5: auto (adaptive),auto,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan

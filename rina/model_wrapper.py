@@ -139,6 +139,7 @@ class DSKVCacheModel:
 
             # ── Protected layer (§8.1.8): skip 1-bit encoding ──────────
             is_protected = layer_idx in self.cfg.protected_layers
+            use_prefill_protect = getattr(self.cfg, 'prefill_protected', False)
 
             layer_k_stores = []
             layer_v_stores = []
@@ -150,7 +151,7 @@ class DSKVCacheModel:
                 # Bulk encode: uses cross_token_group for joint encoding
                 k_store, v_store = encode_kv_cache(
                     k_h, v_h, layer_cfg,
-                    protected=is_protected,
+                    protected=is_protected or use_prefill_protect,
                 )
 
                 layer_k_stores.append(k_store)
@@ -208,6 +209,10 @@ class DSKVCacheModel:
             k_momentum, k_integrator2 = None, None
             v_momentum, v_integrator2 = None, None
 
+            # ── Periodic FP16 bypass (P1 anchor refresh) ──
+            is_bypass = (self.cfg.refresh_interval > 0 and
+                         (decode_step == 0 or (decode_step + 1) % self.cfg.refresh_interval == 0))
+
             for h in range(n_kv):
                 # Slice out the LAST token only (use new_token_idx: without stop)
                 k_new = k_full[0, h, new_token_idx:]  # (1, d_head)
@@ -217,10 +222,12 @@ class DSKVCacheModel:
                 k_momentum, k_integrator2 = k_stores[h].append_incremental(
                     k_new, cfg=layer_cfg, svd_shaper=None, v_rotation=None,
                     initial_momentum=k_momentum, initial_integrator2=k_integrator2,
+                    bypass=is_bypass,
                 )
                 v_momentum, v_integrator2 = v_stores[h].append_incremental(
                     v_new, cfg=layer_cfg, svd_shaper=None, v_rotation=v_rot,
                     initial_momentum=v_momentum, initial_integrator2=v_integrator2,
+                    bypass=is_bypass,
                 )
 
     # ------------------------------------------------------------------

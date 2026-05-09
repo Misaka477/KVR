@@ -1,5 +1,0 @@
-label,n_steps_k,n_steps_v,proj_beta,diff_residual_gamma,order2_gamma,cross_token_group,protected_layers,layer_step_map,beta_decay,num_tokens_generated,first_divergence,token_match_rate,compression_ratio,ds_memory_mb,elapsed_s
-A_baseline,3,5,0.3,0.25,0.3,4,[],off,off,80,6,0.1932,2.88,2.83,8.86
-B_pyramid_protect,3,5,0.3,0.25,0.3,4,"[0, 15]",off,off,80,3,0.1364,2.77,2.82,8.19
-C_adaptive_combo,3,5,0.3,0.25,0.3,4,[],on,on,80,3,0.125,2.77,2.95,9.68
-D_full_stack,3,5,0.3,0.25,0.3,4,"[0, 15]",on,on,80,3,0.125,2.68,2.92,7.72

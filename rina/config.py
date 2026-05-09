@@ -5,7 +5,7 @@
 # See Also
 # --------
 # RINA_Whitepaper §8 (Parameter Reference) & §10.3 (Ablation guardrails)
-# DS-KVCache_Whitepaper §4 (Architecture decisions)
+# RINA_Whitepaper §8.4 (Parameter Reference) & §10 (Prototype Results)
 
 from __future__ import annotations
 
@@ -54,18 +54,18 @@ class DSKVCacheConfig:
         added to the Σ-Δ loop, forming a Type-II tracking loop that
         eliminates steady-state error for linearly-varying signals.
         Recommended 0.0 (off) or 0.05 – 0.20.
-        See *DS-KVCache_Whitepaper §4.2.1 (C2 — Second-Order Tracking)*.
+        See *RINA_Whitepaper §8.3 (Second-Order Σ-Δ Modulation)*.
     order2_c1 : float
         Second-order lead compensator numerator.
-        See *DS-KVCache_Whitepaper §4.2.2 (Compensator Design)*.
+        See *RINA_Whitepaper §8.3 (Second-Order Σ-Δ Modulation)*.
     order2_c2 : float
         Second-order lead compensator denominator.
-        See *DS-KVCache_Whitepaper §4.2.2 (Compensator Design)*.
+        See *RINA_Whitepaper §8.3 (Second-Order Σ-Δ Modulation)*.
     zero_mean_integrator2 : bool
         If True, initialise the second integrator state such that its mean
         is zero over each tile.  Helps when the second integrator accumulates
         a large DC offset that would saturate the 1-bit quantiser.
-        See *DS-KVCache_Whitepaper §4.2.4 (DC-offset mitigation)*.
+        See *RINA_Whitepaper §8.3 (Second-Order Σ-Δ Modulation)*.
     use_differential : bool
         Enable two-stage residual encoding for finer reconstruction.
     diff_strategy : str
@@ -243,6 +243,13 @@ class DSKVCacheConfig:
     recon_weight_temperature: float = 0.5
     """Temperature for reconstruction weight softmax."""
 
+    # ── Periodic FP16 bypass (anchor token refresh) ────────────────────
+    refresh_interval: int = 0
+    """If > 0, every ``refresh_interval``-th decode token's KV is stored at
+    full FP16 precision (bypasses Σ-Δ encoding).  This periodically resets
+    cumulative quantization error to zero.  Default 0 = disabled.
+    Recommended 8–16 for long generation."""
+
     # ── Per-layer step mapping ──────────────────────────────────────────
     layer_step_map: Optional[Dict[int, Tuple[int, int]]] = None
 
@@ -250,6 +257,12 @@ class DSKVCacheConfig:
     protected_layers: List[int] = field(default_factory=lambda: [0, -1])
     """Layer indices (0-based) that bypass 1-bit encoding.  Default: [0, -1]
     (first and last layers).  -1 is interpreted as self._num_layers-1 at runtime."""
+
+    # ── Prefill FP16 protection (Step 0 Bypass enhancement) ───────────────
+    prefill_protected: bool = False
+    """If True, all prefill K/V tokens are stored as raw FP16 (bypass Σ-Δ encoding).
+    This ensures the decode phase starts from zero quantization error.
+    Default False."""
 
     # ── Beta decay for decode (§8.1.11) ─────────────────────────────────
     beta_decay_start: Optional[float] = None
