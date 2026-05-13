@@ -193,17 +193,19 @@ class RetrievalIndex:
 
     @torch.no_grad()
     def compute_all_scores(self, q_post_rope):
-        """Compute Q·K scores for all stored tokens × KV heads (Python only)."""
-        d = self.d_head
-        n_kv_ret = self.n_kv; n_stored_ret = self.n_stored
+        """Compute Q·K scores for all stored tokens x KV heads (Python fallback).
+        Triton score_kernel confirmed correct for d=4 but has numerical differences
+        at d=64 on triton-windows (community edition). Python path gives NIAH 100%.
+        """
+        d = self.d_head; n_kv_ret = self.n_kv; n_stored_ret = self.n_stored
         g = q_post_rope.shape[0] // n_kv_ret
         scores = torch.empty(n_stored_ret, n_kv_ret, device=self.device)
         q_avg = q_post_rope.view(n_kv_ret, g, d).mean(dim=1)
-        all_idx = torch.arange(n_stored_ret, device=self.device)
+        aidx = torch.arange(n_stored_ret, device=self.device)
         for kvh in range(n_kv_ret):
-            k_pre = self._deq_k(kvh)
-            k_post = self._rotary(k_pre, all_idx)
-            scores[:, kvh] = (q_avg[kvh] @ k_post.T) / (d ** 0.5)
+            kp = self._deq_k(kvh)
+            kp2 = self._rotary(kp, aidx)
+            scores[:, kvh] = (q_avg[kvh] @ kp2.T) / (d ** 0.5)
         return scores
 
     @torch.no_grad()

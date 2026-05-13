@@ -17,25 +17,25 @@ def score_kernel(
     if tid >= N_STORED or kvh >= N_KV:
         return
 
-    q0 = tl.load(q_ptr + kvh * G * D + tl.arange(0, HALF))
-    q1 = tl.load(q_ptr + kvh * G * D + HALF + tl.arange(0, HALF))
+    q_even = tl.load(q_ptr + kvh * G * D + 2 * tl.arange(0, HALF))
+    q_odd = tl.load(q_ptr + kvh * G * D + 2 * tl.arange(0, HALF) + 1)
 
     base = tid * N_KV * HALF + kvh * HALF + tl.arange(0, HALF)
     packed = tl.load(k_packed_ptr + base)
     hi = (packed >> 4).to(tl.float32) - 8.0
     lo = (packed & 0x0F).to(tl.float32) - 8.0
 
-    s0 = tl.load(k_scales_ptr + kvh * D + 2 * tl.arange(0, HALF))
-    s1 = tl.load(k_scales_ptr + kvh * D + 2 * tl.arange(0, HALF) + 1)
-    k0 = hi * (2.0 * s0 / 16.0)
-    k1 = lo * (2.0 * s1 / 16.0)
+    s_even = tl.load(k_scales_ptr + kvh * D + 2 * tl.arange(0, HALF))
+    s_odd = tl.load(k_scales_ptr + kvh * D + 2 * tl.arange(0, HALF) + 1)
+    k0 = hi * (2.0 * s_even / 16.0)
+    k1 = lo * (2.0 * s_odd / 16.0)
 
     c = tl.load(cos_tbl_ptr + tid * D + tl.arange(0, HALF))
     s = tl.load(sin_tbl_ptr + tid * D + tl.arange(0, HALF))
     k0r = k0 * c - k1 * s
     k1r = k0 * s + k1 * c
 
-    sc = (tl.sum(q0 * k0r) + tl.sum(q1 * k1r)) / (D ** 0.5)
+    sc = (tl.sum(q_even * k0r) + tl.sum(q_odd * k1r)) / (D ** 0.5)
     tl.store(scores_ptr + tid * N_KV + kvh, sc)
 
 
