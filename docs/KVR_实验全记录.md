@@ -69,7 +69,7 @@ retrieve_topk(q_post_rope):
   3. 对 top-K: V_final = W·(K_pre − μ_k) + μ_v + 反量化(vr_codes)
   4. 返回 K_post + V_final 给级联注意力
 
-> **位压缩状态：** int4 K + int2 V 残差已启用位压缩存储，Python 路径下 NIAH 100%（排除边界 case）。
+> **位压缩状态：** int4 K + int2 V 残差已启用位压缩存储，NIAH 100%。
 ```
 
 ### 2.4 懒检索触发机制
@@ -89,21 +89,18 @@ def _update_stores(self, li, k_pre, v_val, k_post):
     win.append(k_post, v_val)
 ```
 
-### 2.5 块预填充（Block Prefill）
+### 2.5 预填充
 
-不再使用 `model(input_ids)` 做全量 forward。自定义逐块 forward：
+使用 **hook 模式预填充**：`model(input_ids)` + 每层 self_attn 注册 hook，捕获精确 K_pre/V。
 
 ```
-外层循环：16 层
-  内层循环：128 块（64K ÷ 512）
-    1. layernorm(512 tok) → Q/K_pre/V 投影
-    2. RoPE (per-head expand)
-    3. 累积 K/V 到临时张量
-    4. 分组 softmax 注意力（在线 safe softmax，chunk=512）
-    5. o_proj + 残差 + MLP
+model(input_ids) flash attention
+→ hook 捕获每层的 K_pre、V
+→ 从 K_pre 旋转得到 K_post → 存入窗口
+→ 若 prompt > window_size → 存入检索（eager build）
 ```
 
-**显存：** scores 张量永不过 O(512 × n_kv × g × 512) = ~16MB，不随上下文增长。
+无需 `output_hidden_states=True`（16 层 hidden states 共 4GB），hook 只捕获 K_pre/V（~512MB）。64K 以内不会 OOM。
 
 ### 2.6 增量生成（KVRGenerator）
 
@@ -338,7 +335,6 @@ docs/
 1. **AR 路径分叉**：当 `window_size ≪ context` 时，int4 K 搜索可能将相似段 token 排序错误。分叉后文本始终语法正确、语义合理。
 2. **V 预测仅从 prefill 拟合**：W 矩阵只在 prefill 时拟合一次。风险低但需验证。
 3. **64K prompt 极度重复时生成质量下降**：非 KVR 问题，换非重复 prompt 应恢复正常。
-4. **Block prefill vs hook prefill 取舍**：hook prefill（`model(input_ids)` + 钩子）可产生精确隐藏状态使 NIAH 100%，但 8K+ 上下文可能 OOM。块预填充适合长上下文但 layer 15 cos=0.819。
-5. **Step 速度受 Windows 无 Triton inductor 限制**：`torch.compile` 在 Windows 上不工作，需 WSL2/Linux 才能达到 ~5ms/step。
-6. **Triton 分组 softmax 不如 cuBLAS einsum 快**：tensor core 的 batch matmul 是分组 softmax 的最优解，Triton 不适合此场景。
-7. **Cos 表跨步已修复（CUDA kernel NIAH 100%）**：搜索 kernel（`kvr_cuda.cu`）用 `tid * half` 而非 `tid * d` 读取 cos 表，精度与 Python 等价。
+4. **Step 速度受 Windows 无 Triton inductor 限制**：`torch.compile` 在 Windows 上不工作，需 WSL2/Linux 才能达到 ~5ms/step。
+5. **Triton 分组 softmax 不如 cuBLAS einsum 快**：tensor core 的 batch matmul 是分组 softmax 的最优解，Triton 不适合此场景。
+6. **Cos 表跨步已修复（CUDA kernel NIAH 100%）**：搜索 kernel（`kvr_cuda.cu`）用 `tid * half` 而非 `tid * d` 读取 cos 表，精度与 Python 等价。
